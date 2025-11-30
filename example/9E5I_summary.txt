@@ -1,0 +1,28 @@
+# CaCoFold summary for 9E5I_1_Chains
+# Length (ungapped): 76
+
+>sequence
+GGUAAAAGCAUAGUGGGAAAGUGACGUGAAAUUCGUCCACACGAAAGUAAGGUCAUAGUCCGAAUGCCACCUACCA
+
+>consensus_projected
+.........(...)......(.((((((.))..))))).................()().................
+
+>pk_all_layers
+.........(a.b)AB((((a.abcdeffd(ddbbAeBCBBCADfg)D..ggg((eeeDEFEEFGGGEDC...G..
+
+>pk_layer_0
+.........(...)(((((((.((((((.)(.)))))((..)).(.))..((((((((((()))))))........
+>pk_layer_1
+..........a...A.....a.aaaaaa.a...AAAAAA...A..a.........a.AAA.AA.a.A.........
+>pk_layer_2
+............b..B.......bbb.b....bbb.BBBBBB.b...B........b.BBB...............
+>pk_layer_3
+........................cccccc......c.C..C.CC...........CCC.CC...CCC.C......
+>pk_layer_4
+.........................ddddd.dd..........DD..D.......D.DDD...DDDD.D.......
+>pk_layer_5
+..........................eee.......e........E.........eee.EEEEEEE.E........
+>pk_layer_6
+...........................ff...............f...............F..FFFF.........
+>pk_layer_7
+.............................................g....ggg...........GGG......G..
