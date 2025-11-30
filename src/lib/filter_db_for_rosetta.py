@@ -42,6 +42,55 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Iterable, Sequence
 import sys
 
+GAP_CHARS = set("-._~")
+
+GAP_CHARS = set("-._~")
+
+
+def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
+    """
+    Read the ungapped sequence for `seq_name` from a CaCoFold/R-scape
+    Stockholm (.sto) file.
+
+    If seq_name is None, use the first sequence in the file.
+    """
+    sequences: Dict[str, List[str]] = {}
+
+    with path.open() as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+
+            if not line:
+                continue
+            if line.startswith("#"):
+                # comments, #=GC, etc.
+                continue
+            if line.startswith("//"):
+                break
+
+            parts = line.split(maxsplit=1)
+            if len(parts) < 2:
+                continue
+            name, s = parts[0], parts[1].strip()
+            sequences.setdefault(name, []).append(s)
+
+    if not sequences:
+        raise ValueError(f"No sequences found in Stockholm file {path}")
+
+    if seq_name is None:
+        name = next(iter(sequences.keys()))
+    else:
+        if seq_name not in sequences:
+            available = ", ".join(sorted(sequences.keys()))
+            raise ValueError(
+                f"Sequence '{seq_name}' not found in {path}. "
+                f"Available: {available}"
+            )
+        name = seq_name
+
+    aligned = "".join(sequences[name])
+    ungapped = "".join(ch for ch in aligned if ch not in GAP_CHARS)
+    return ungapped.upper()
 
 # -------------------------------------------------------------
 # Sequence + base-pair helpers
@@ -412,10 +461,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Optional cap on number of structures to keep after filtering.",
     )
     parser.add_argument(
-        "--seq-file",
+        "--sto",
         help=(
-            "FASTA file with the RNA sequence corresponding to the "
-            "structures (used to prune non-complementary base pairs)."
+            "CaCoFold/R-scape Stockholm (.sto) file containing the alignment "
+            "for this RNA (used to obtain the ungapped sequence when pruning "
+            "non-complementary base pairs)."
+        ),
+    )
+    parser.add_argument(
+        "--seq-name",
+        help=("Name of sequence in .sto file."
         ),
     )
 
@@ -484,31 +539,36 @@ def main(argv: Sequence[str] | None = None) -> None:
         f"skipped {num_skipped} invalid structures.\n"
     )
 
-    # 6) Optionally prune non-complementary base pairs using the sequence
-    if args.seq_file is not None:
-        seq_path = Path(args.seq_file)
-        seq = read_fasta_sequence(seq_path)
-        if len(seq) != L:
-            raise ValueError(
-                f"Sequence length ({len(seq)}) from {seq_path} does not match "
-                f"structure length ({L})"
-            )
+    # 6) Prune non-complementary base pairs using sequence from Stockholm
+    sto_path = Path(args.sto)
+    if not sto_path.is_file():
+        raise FileNotFoundError(f"Stockholm file not found at {sto_path}")
 
-        pruned: List[str] = []
-        total_removed = 0
-        for s in converted:
-            new_s, removed = prune_noncomplementary_pairs(s, seq)
-            pruned.append(new_s)
-            total_removed += removed
+    print(f"[INFO] Reading ungapped sequence from Stockholm file: {sto_path}")
+    seq = read_ungapped_seq_from_sto(sto_path, args.seq_name)
 
-        converted = pruned
-        if total_removed > 0:
-            print(
-                f"[INFO] Removed {total_removed} non-complementary base pairs "
-                f"across all structures based on sequence in {seq_path}"
-            )
-        else:
-            print("[INFO] No non-complementary base pairs detected.")
+    if len(seq) != L:
+        raise ValueError(
+            f"Sequence length from {sto_path} ({len(seq)}) does not match "
+            f"structure length ({L}). Make sure the alignment sequence "
+            "corresponds to these .db structures."
+        )
+
+    pruned: List[str] = []
+    total_removed = 0
+    for s in converted:
+        new_s, removed = prune_noncomplementary_pairs(s, seq)
+        pruned.append(new_s)
+        total_removed += removed
+
+    converted = pruned
+    if total_removed > 0:
+        print(
+            f"[INFO] Removed {total_removed} non-complementary base pairs "
+            "across all structures based on sequence from the Stockholm file"
+        )
+    else:
+        print("[INFO] No non-complementary base pairs detected.")
 
     write_db_structures(db_out, converted)
     print(f"[INFO] Wrote {len(converted)} Rosetta-compatible structures to {db_out}")

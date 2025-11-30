@@ -45,6 +45,54 @@ from typing import Dict, List, Sequence, Tuple
 UNPAIRED_CHAR = "."
 # For parsing RNAstructure Fold bracket output:
 ALLOWED_DB_CHARS = set(".()")
+# Alignment gaps (same as in sample_cacofold_structures.py)
+GAP_CHARS = set("-._~")
+
+
+def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
+    """
+    Read the ungapped sequence for `seq_name` from a CaCoFold/R-scape
+    Stockholm (.sto) file.
+
+    If seq_name is None, use the first sequence in the file.
+    """
+    sequences: Dict[str, List[str]] = {}
+    with path.open() as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+
+            if not line:
+                continue
+            if line.startswith("#"):
+                # comments, #=GC, etc.
+                continue
+            if line.startswith("//"):
+                break
+
+            parts = line.split(maxsplit=1)
+            if len(parts) < 2:
+                continue
+            name, s = parts[0], parts[1].strip()
+            sequences.setdefault(name, []).append(s)
+
+    if not sequences:
+        raise ValueError(f"No sequences found in Stockholm file {path}")
+
+    if seq_name is None:
+        name = next(iter(sequences))
+    else:
+        if seq_name not in sequences:
+            available = ", ".join(sorted(sequences.keys()))
+            raise ValueError(
+                f"Sequence '{seq_name}' not found in {path}. "
+                f"Available: {available}"
+            )
+        name = seq_name
+
+    aligned = "".join(sequences[name])
+    ungapped = "".join(ch for ch in aligned if ch not in GAP_CHARS)
+    return ungapped.upper()
+
 
 
 def read_fasta_sequence(path: Path, seq_name: str | None = None) -> str:
@@ -551,7 +599,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     )
     parser.add_argument(
-        "--seq-file",
+        "--sto",
         required=True,
         help="FASTA/SEQ file with the full ungapped sequence for this RNA.",
     )
@@ -640,12 +688,37 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stderr.write(f"[ERROR] DuplexFold executable not found at: {duplex_exe}\n")
         sys.exit(1)
 
-    seq_file = Path(args.seq_file)
     db_in = Path(args.db_in)
     db_out = Path(args.db_out)
 
-    full_seq = read_fasta_sequence(seq_file, args.seq_name)
+    # Decide where to get the sequence from:
+    # 1) If --sto is provided, read ungapped sequence from the Stockholm file.
+    # 2) Else, fall back to --seq-file FASTA/SEQ.
+    if args.sto is not None:
+        sto_path = Path(args.sto)
+        if not sto_path.is_file():
+            sys.stderr.write(f"[ERROR] Stockholm file not found at: {sto_path}\n")
+            sys.exit(1)
+        full_seq = read_ungapped_seq_from_sto(sto_path, args.seq_name)
+    else:
+        if args.seq_file is None:
+            sys.stderr.write(
+                "[ERROR] You must provide either --sto or --seq-file.\n"
+            )
+            sys.exit(1)
+        seq_file = Path(args.seq_file)
+        if not seq_file.is_file():
+            sys.stderr.write(f"[ERROR] Sequence file not found at: {seq_file}\n")
+            sys.exit(1)
+        full_seq = read_fasta_sequence(seq_file, args.seq_name)
+
     structs = read_db_structures(db_in)
+
+    if len(full_seq) != len(structs[0]):
+        raise ValueError(
+            f"Sequence length ({len(full_seq)}) != structure length ({len(structs[0])}). "
+            "Make sure you are using the ungapped sequence corresponding to these structures."
+        )
 
     if len(full_seq) != len(structs[0]):
         raise ValueError(
