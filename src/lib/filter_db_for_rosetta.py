@@ -507,7 +507,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--hamming-frac",
         type=float,
-        default=0.05,
+        default=0.0,
         help=(
             "If --hamming-threshold == 0, choose an adaptive threshold "
             "as round(hamming_frac * L), where L is the structure length. "
@@ -543,35 +543,35 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     # 1) Remove exact duplicates
     structs = deduplicate(structs)
-    print(f"[INFO] After deduplication: {len(structs)} unique structures")
+    #print(f"[INFO] After deduplication: {len(structs)} unique structures")
 
-    # 2) Determine Hamming threshold (static or adaptive)
-    L = len(structs[0])
+    ## 2) Determine Hamming threshold (static or adaptive)
+    #L = len(structs[0])
 
-    # Start from user-specified threshold
-    threshold = args.hamming_threshold
+    ## Start from user-specified threshold
+    #threshold = args.hamming_threshold
 
-    if threshold == 0:
-        # Use adaptive threshold based on structure length
-        if args.hamming_frac > 0.0:
-            threshold = max(1, int(round(args.hamming_frac * L)))
-            print(
-                f"[INFO] Using adaptive Hamming threshold: "
-                f"threshold = round({args.hamming_frac} * {L}) = {threshold}"
-            )
-        else:
-            threshold = 0
-            print("[INFO] Hamming merging disabled (hamming_frac <= 0 and threshold == 0)")
-    else:
-        print(f"[INFO] Using fixed Hamming threshold: {threshold}")
+    #if threshold == 0:
+    #    # Use adaptive threshold based on structure length
+    #    if args.hamming_frac > 0.0:
+    #        threshold = max(1, int(round(args.hamming_frac * L)))
+    #        print(
+    #            f"[INFO] Using adaptive Hamming threshold: "
+    #            f"threshold = round({args.hamming_frac} * {L}) = {threshold}"
+    #        )
+    #    else:
+    #        threshold = 0
+    #        print("[INFO] Hamming merging disabled (hamming_frac <= 0 and threshold == 0)")
+    #else:
+    #    print(f"[INFO] Using fixed Hamming threshold: {threshold}")
 
-    # 3) Greedy Hamming-based merging (optional)
-    if threshold > 0:
-        structs = merge_by_hamming(structs, threshold)
-        print(
-            f"[INFO] After Hamming merge (threshold={threshold}): "
-            f"{len(structs)} structures"
-        )
+    ## 3) Greedy Hamming-based merging (optional)
+    #if threshold > 0:
+    #    structs = merge_by_hamming(structs, threshold)
+    #    print(
+    #        f"[INFO] After Hamming merge (threshold={threshold}): "
+    #        f"{len(structs)} structures"
+    #    )
 
     # 4) Optional cap on number of structures
     if args.max_structures is not None and len(structs) > args.max_structures:

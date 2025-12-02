@@ -7,35 +7,33 @@
 # on the file extension.
 
 # --- CaCoFold inputs ---
-sto: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.sto
-cov: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.cov
-seq_name: "9E5I_1_Chains"   # sequence ID in the .sto file
+sto: combined_1.cacofold.sto
+cov: combined_1.cacofold.cov
+seq_name: "4GMA_1_Chain"   # sequence ID in the .sto file
 
 # --- RNAstructure executables ---
 # Update these to point to your local RNAstructure installation.
-#fold_exe: "/path/to/RNAstructure/exe/Fold"
-fold_exe: "/home/lukas/research/RNAstructure/exe/Fold"
-#duplex_exe: "/path/to/RNAstructure/exe/DuplexFold"
-duplex_exe: "/home/lukas/research/RNAstructure/exe/DuplexFold"
+fold_exe: "../../RNAstructure/exe/Fold"
+duplex_exe: "../../RNAstructure/exe/DuplexFold"
 
 # --- Sampling parameters (pk sampler) ---
 sample:
   n_samples: 100
-  burn_in: 1000
-  thin: 1000
+  burn_in: 100
+  thin: 100
   min_loop_sep: 2
   beta: 1
   seed: 0
   pk_alpha: 2
-  pk_filter_frac: 0.025
-  pk_filter_max_cross_per_pair: 4
-  pk_filter_max_total_cross: 20
+  pk_filter_frac: 0.02
+  pk_filter_max_cross_per_pair: 2
+  pk_filter_max_total_cross: 10
 
   cov_mode: "logE"          # "off", "score", "power", ...
   cov_alpha: 2.0
-  cov_min_power: 100.0
-  cov_forbid_negative: False
-  cov_negative_E: 0.0
+  cov_min_power: 1.0
+  cov_forbid_negative: True
+  cov_negative_E: 2.0
 
 # --- Refinement of long unpaired regions (RNAstructure Fold / DuplexFold) ---
 refine:
@@ -53,9 +51,9 @@ ensure_valid:
 
 # --- Rosetta-ready / clustering ---
 rosetta:
-  hamming_threshold: 3
-  hamming_frac: 0.05
-  max_structures: 500
+  hamming_threshold: 0
+  hamming_frac: 0.0
+  max_structures: 100000
 
 # --- I/O layout ---
 io:

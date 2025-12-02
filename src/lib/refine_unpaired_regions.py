@@ -889,7 +889,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 full_seq=full_seq,
                 fold_exe=fold_exe,
                 min_unpaired_len=args.min_unpaired,
-                temperature=args.temperature,
+                temperature=310,
                 extra_args=args.fold_extra_arg,
                 cache=fold_cache,
             )
