@@ -46,11 +46,14 @@ GAP_CHARS = set("-._~")
 
 GAP_CHARS = set("-._~")
 
-
 def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
     """
-    Read the ungapped sequence for `seq_name` from a CaCoFold/R-scape
-    Stockholm (.sto) file.
+    Read the ungapped RNA sequence for `seq_name` from a Stockholm (.sto) file.
+
+    - Concatenates segments for each sequence name.
+    - Strips alignment gaps.
+    - Uppercases and converts DNA T -> RNA U so downstream code sees
+      a consistent RNA alphabet.
 
     If seq_name is None, use the first sequence in the file.
     """
@@ -63,7 +66,6 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
             if not line:
                 continue
             if line.startswith("#"):
-                # comments, #=GC, etc.
                 continue
             if line.startswith("//"):
                 break
@@ -90,7 +92,8 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
 
     aligned = "".join(sequences[name])
     ungapped = "".join(ch for ch in aligned if ch not in GAP_CHARS)
-    return ungapped.upper()
+    return ungapped.upper().replace("T", "U")
+
 
 # -------------------------------------------------------------
 # Sequence + base-pair helpers
@@ -99,7 +102,7 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
 def read_fasta_sequence(path: Path) -> str:
     """
     Read a single sequence from a FASTA file and return it as an
-    uppercase string with no whitespace.
+    uppercase RNA string (T converted to U) with no whitespace.
     """
     seq_lines: List[str] = []
     with path.open() as fh:
@@ -108,40 +111,56 @@ def read_fasta_sequence(path: Path) -> str:
             if not line or line.startswith(">"):
                 continue
             seq_lines.append(line)
+
     if not seq_lines:
         raise ValueError(f"No sequence found in FASTA file {path}")
-    return "".join(seq_lines).upper()
+
+    seq = "".join(seq_lines).upper()
+    return seq.replace("T", "U")
 
 
 def is_complementary(base1: str, base2: str, allow_wobble: bool = True) -> bool:
     """
-    Return True if the two nucleotides form a canonical Watson-Crick
-    pair (AU/UA/GC/CG), optionally allowing GU wobble (GU/UG).
-    Any non-ACGU nucleotide is treated as non-complementary.
+    Heuristic complementarity check mimicking Rosetta's expectations.
+
+    - Normalizes DNA 'T' -> RNA 'U'.
+    - If both bases are unambiguous RNA (A/C/G/U), require canonical
+      Watson–Crick pairing (AU, UA, GC, CG) plus optional GU wobble.
+    - If either base is ambiguous (not A/C/G/U), we *do not* force
+      pruning: we return True so the pair is kept.
     """
-    b1 = base1.upper()
-    b2 = base2.upper()
+    def _norm(b: str) -> str:
+        b = b.upper()
+        if b == "T":
+            b = "U"
+        return b
 
-    if b1 not in "ACGU" or b2 not in "ACGU":
-        return False
+    b1 = _norm(base1)
+    b2 = _norm(base2)
 
-    pair = b1 + b2
-    canonical = {"AU", "UA", "GC", "CG"}
+    # Strict check when both bases are unambiguous
+    if b1 in "ACGU" and b2 in "ACGU":
+        pair = b1 + b2
+        canonical = {"AU", "UA", "GC", "CG"}
+        if allow_wobble:
+            canonical |= {"GU", "UG"}
+        return pair in canonical
 
-    if allow_wobble:
-        canonical |= {"GU", "UG"}
-
-    return pair in canonical
+    # At least one ambiguous / unknown base: be permissive here
+    return True
 
 
-def prune_noncomplementary_pairs(struct: str, seq: str) -> tuple[str, int]:
+def prune_noncomplementary_pairs(
+    struct: str, seq: str = None, allow_wobble: bool = True
+) -> tuple[str, int]:
     """
     Given a dot-bracket structure (Rosetta notation) and its sequence,
-    remove any base pairs that are not between complementary nucleotides
-    by setting those positions to '.'.
+    remove any base pairs that are not between complementary nucleotides.
 
-    Returns:
-        (new_struct, num_pairs_removed)
+    This applies to *all* bracket types, including `()`. Rosetta's
+    RNA_SecStruct requires every pair to be canonical (AU/UA/GC/CG and
+    optionally GU/UG), so we cannot keep non-canonical pairs even if they
+    originated from RNAstructure.
     """
     if len(struct) != len(seq):
         raise ValueError(
@@ -152,12 +171,13 @@ def prune_noncomplementary_pairs(struct: str, seq: str) -> tuple[str, int]:
     chars = list(struct)
     removed = 0
 
-    for i, j, _op in pairs:
-        if not is_complementary(seq[i], seq[j]):
-            if chars[i] != "." or chars[j] != ".":
-                chars[i] = "."
-                chars[j] = "."
-                removed += 1
+    for i, j, op in pairs:
+        b1 = seq[i]
+        b2 = seq[j]
+        if not is_complementary(b1, b2, allow_wobble=allow_wobble):
+            chars[i] = "."
+            chars[j] = "."
+            removed += 1
 
     return "".join(chars), removed
 
@@ -167,25 +187,65 @@ def prune_noncomplementary_pairs(struct: str, seq: str) -> tuple[str, int]:
 # -------------------------------------------------------------
 
 def read_db_structures(path: Path) -> List[str]:
-    """Read one structure per non-empty line from a .db file."""
+    """
+    Read structures from a .db file.
+
+    Supports:
+
+      1. Legacy format: one structure per non-empty line.
+      2. New format:    first non-empty line is an ungapped sequence
+                       (no dot/bracket chars), remaining lines are
+                       dot-bracket structures.
+
+    Returns only the structures (sequence header is ignored).
+    """
     structs: List[str] = []
+    sequence: str | None = None
+
     with path.open() as fh:
         for line in fh:
             s = line.strip()
             if not s:
                 continue
+
+            if sequence is None:
+                if all(ch not in ".()[]{}<>" for ch in s):
+                    sequence = s
+                    continue
+
             structs.append(s)
+
     if not structs:
         raise ValueError(f"No structures found in {path}")
-    # sanity: check consistent lengths
+
     lengths = {len(s) for s in structs}
     if len(lengths) != 1:
-        raise ValueError(f"Inconsistent structure lengths in {path}: {lengths}")
+        raise ValueError(
+            f"Inconsistent structure lengths in {path}: {lengths}"
+        )
+
+    if sequence is not None and len(sequence) not in lengths:
+        raise ValueError(
+            f"Sequence length in {path} ({len(sequence)}) does not match "
+            f"structure length(s) {lengths}"
+        )
+
     return structs
 
+def write_db_structures(
+    path: Path,
+    structs: Iterable[str],
+    seq: str | None = None,
+) -> None:
+    """
+    Write a .db file.
 
-def write_db_structures(path: Path, structs: Iterable[str]) -> None:
+    If `seq` is provided, it is written as the first line,
+    then one structure per line.
+    """
     with path.open("w") as fh:
+        if seq is not None:
+            fh.write(seq + "\n")
         for s in structs:
             fh.write(s + "\n")
 
@@ -570,7 +630,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     else:
         print("[INFO] No non-complementary base pairs detected.")
 
-    write_db_structures(db_out, converted)
+    write_db_structures(db_out, converted, seq=seq)
     print(f"[INFO] Wrote {len(converted)} Rosetta-compatible structures to {db_out}")
 
 

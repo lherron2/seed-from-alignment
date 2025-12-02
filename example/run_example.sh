@@ -1,46 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve paths
+# Example driver for the pre-wired pipelines defined in src/lib/pipeline.py.
+#
+# This script assumes it lives in the `example/` directory of the repo and
+# that the CaCoFold files:
+#   - combined_1.cacofold.sto
+#   - combined_1.cacofold.cov
+# are present alongside it (as they are in this repo).
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-ROOT_DIR="${SCRIPT_DIR}/.."
+ROOT_DIR="$( cd "${SCRIPT_DIR}/.." && pwd )"
 
-STO="${SCRIPT_DIR}/combined_1.cacofold.sto"
-COV="${SCRIPT_DIR}/combined_1.cacofold.cov"
-NAME='9E5I'
-SEQ="${NAME}_1_Chains"
-UNREFINED_DB="${SCRIPT_DIR}/${SEQ}_beta1.0_seed0.db"
-REFINED_DB="${SCRIPT_DIR}/${SEQ}_Chain_beta1.0_seed0_refined.db"
-ROSETTA_DB="${SCRIPT_DIR}/${SEQ}_rosetta.db"
-SUMMARY="${SCRIPT_DIR}/${NAME}_summary.txt"
+CONFIG="${SCRIPT_DIR}/pipeline_config.yaml"
 
+# Choose which wiring to run:
+#   legacy       : get_consensus_db → sample_pk → refine → rosetta_ready
+#   refine_first : get_consensus_db → refine → sample_pk → ensure_valid → rosetta_ready
+MODE="refine_first"
 
-echo "[INFO] Sampling structures for ${SEQ}"
-python "${ROOT_DIR}/sample_cli.py" "${STO}" \
-  --seq "${SEQ}" \
-  --n-samples 1000 \
-  --thin 1000 \
-  --beta 1 \
-  --cov-file "${COV}" \
-  --cov-mode logE \
-  --cov-alpha 1 \
-  --out-db "${UNREFINED_DB}" \
-  --summary "${SUMMARY}" \
-  --pk-filter-frac 0.2 \
-  #--cov-forbid-negative
+echo "[EXAMPLE] Running pipeline in mode: ${MODE}"
+echo "[EXAMPLE]   Config: ${CONFIG}"
+echo "[EXAMPLE]   Repo root: ${ROOT_DIR}"
 
-python "${ROOT_DIR}/refine_unpaired_regions.py" \
-  --sto "${STO}" \
-  --seq-name "${SEQ}" \
-  --db-in "${UNREFINED_DB}"\
-  --db-out "${REFINED_DB}" \
-  --fold-exe "${PROJECT}/repos/RNAstructure/exe/Fold" \
-  --duplex-exe "${PROJECT}/repos/RNAstructure/exe/DuplexFold" \
-  --min-unpaired 8 \
-  --min-terminal-unpaired 1 
-   
-python "${ROOT_DIR}/filter_db_for_rosetta.py" \
-  --db-in "${REFINED_DB}" \
-  --db-out "${ROSETTA_DB}" \
-  --sto "${STO}" \
-  --seq-name "${SEQ}"
+python "${ROOT_DIR}/run_pipeline.py" \
+    --config "${CONFIG}" \
+    --mode "${MODE}"
+
+echo "[EXAMPLE] Done. See pipeline_output/ for generated .db files."
+

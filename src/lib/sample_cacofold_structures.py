@@ -23,6 +23,19 @@ GAP_CHARS = set("-._~")
 OPEN_TO_CLOSE = {"(": ")", "<": ">", "[": "]", "{": "}"}
 CLOSE_TO_OPEN = {v: k for k, v in OPEN_TO_CLOSE.items()}
 
+# Canonical base pairs (including GU wobble)
+CANONICAL_BASE_PAIRS = {
+    ("A", "U"), ("U", "A"),
+    ("G", "C"), ("C", "G"),
+    ("G", "U"), ("U", "G"),  # wobble
+}
+
+def is_canonical_pair(b1: str, b2: str) -> bool:
+    """Return True if (b1, b2) is a canonical Watson–Crick or GU wobble pair."""
+    b1u = b1.upper()
+    b2u = b2.upper()
+    return (b1u, b2u) in CANONICAL_BASE_PAIRS
+
 
 # ------------------ Parsing Stockholm + WUSS ------------------ #
 
@@ -315,24 +328,31 @@ def extract_candidate_pairs(
 
     aligned_seq = seqs[seq_name]
     aln2seq, L = aln_to_seq_map(aligned_seq)
-
-    # Collect relevant SS tags
+    ungapped_seq = "".join(ch for ch in aligned_seq if ch not in GAP_CHARS)
     tags = [t for t in ss_tracks if t.startswith("SS_cons")]
+
     if not tags:
         raise ValueError("No SS_cons* tracks found in the Stockholm file.")
 
     tags = sorted(tags, key=ss_tag_order)
 
     pair_scores: Dict[Tuple[int, int], float] = {}
+    dropped_noncanonical = 0
 
     for tag in tags:
         track = ss_tracks[tag]
         pairs_aln = pairs_from_track(track)
         pairs_seq = map_pairs_to_seq(pairs_aln, aln2seq)
-
         for (i, j) in pairs_seq:
             if i > j:
                 i, j = j, i
+
+            # Enforce canonical WC/GU pairing at the *candidate* level
+            b_i = ungapped_seq[i]
+            b_j = ungapped_seq[j]
+            if not is_canonical_pair(b_i, b_j):
+                continue
+
             key = (i, j)
 
             # Base layer-based weight
@@ -343,6 +363,7 @@ def extract_candidate_pairs(
             rec: Optional[CovRecord] = None
             if cov is not None and cov_mode != "off":
                 rec = cov.get(key)
+
                 if rec is not None:
                     # Optionally filter on power / negative evidence
                     if rec.power < cov_min_power:
@@ -366,8 +387,6 @@ def extract_candidate_pairs(
             if cov_mode == "off" or rec is None:
                 w = layer_w
             else:
-                # Simple hybrid:
-                #   w = layer_w + alpha * cov_w
                 w = layer_w + cov_alpha * cov_w
 
             pair_scores[key] = pair_scores.get(key, 0.0) + w
@@ -375,8 +394,13 @@ def extract_candidate_pairs(
     candidate_pairs = [
         (i, j, w) for (i, j), w in sorted(pair_scores.items())
     ]
-    return L, candidate_pairs
+    if dropped_noncanonical > 0:
+        sys.stderr.write(
+            f"[CaCoFoldSample] Dropped {dropped_noncanonical} "
+            f"non-canonical candidate pair(s) for {seq_name} based on sequence.\n"
+        )
 
+    return L, candidate_pairs
 
 # ------------------ Consensus projection + PK summary ----------- #
 
@@ -1042,7 +1066,7 @@ def main() -> None:
     #   line 1: sequence
     #   line 2+: one PK dot-bracket string per sample
     with open(args.out_db, "w") as out_f:
-        # out_f.write(ungapped_seq + "\n")
+        out_f.write(ungapped_seq + "\n")
         for pair_set in samples:
             pk = pairs_to_pk_string(sorted(pair_set), L)
             out_f.write(pk + "\n")

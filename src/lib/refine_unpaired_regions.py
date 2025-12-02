@@ -50,11 +50,11 @@ GAP_CHARS = set("-._~")
 
 
 def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
-    """
-    Read the ungapped sequence for `seq_name` from a CaCoFold/R-scape
-    Stockholm (.sto) file.
+    """Read the ungapped RNA sequence for ``seq_name`` from a Stockholm file.
 
-    If seq_name is None, use the first sequence in the file.
+    The returned sequence is upper-case and any DNA ``T`` is converted to
+    RNA ``U`` so that all downstream steps see a consistent alphabet.
+    If ``seq_name`` is None, the first sequence in the file is used.
     """
     sequences: Dict[str, List[str]] = {}
     with path.open() as fh:
@@ -91,12 +91,14 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
 
     aligned = "".join(sequences[name])
     ungapped = "".join(ch for ch in aligned if ch not in GAP_CHARS)
-    return ungapped.upper()
-
-
+    return ungapped.upper().replace("T", "U")
 
 def read_fasta_sequence(path: Path, seq_name: str | None = None) -> str:
-    """Read the first sequence (or the one matching seq_name) from a FASTA/SEQ file."""
+    """Read the first (or named) sequence from FASTA/SEQ and normalise to RNA.
+
+    The returned sequence is upper-case and any DNA ``T`` is converted to
+    RNA ``U``.
+    """
     seqs: Dict[str, str] = {}
     current_name: str | None = None
     chunks: List[str] = []
@@ -125,32 +127,68 @@ def read_fasta_sequence(path: Path, seq_name: str | None = None) -> str:
     if seq_name is None:
         # just take the first
         name = next(iter(seqs))
-        return seqs[name].upper()
+    else:
+        if seq_name not in seqs:
+            raise ValueError(
+                f"Sequence '{seq_name}' not found in {path}. "
+                f"Available: {', '.join(seqs.keys())}"
+            )
+        name = seq_name
 
-    if seq_name not in seqs:
-        raise ValueError(
-            f"Sequence '{seq_name}' not found in {path}. "
-            f"Available: {', '.join(seqs.keys())}"
-        )
-    return seqs[seq_name].upper()
+    return seqs[name].upper().replace("T", "U")
 
 
 def read_db_structures(path: Path) -> List[str]:
-    """Read a .db file that has ONE structure per non-empty line."""
+    """
+    Read structures from a .db file.
+
+    Supports two layouts:
+
+      1. Legacy: one structure per non-empty line.
+      2. New:    first non-empty line is the ungapped sequence
+                 (no dot/bracket chars), remaining non-empty
+                 lines are structures.
+
+    Returns
+    -------
+    structs : list of dot-bracket strings
+        The structures only (sequence header, if present,
+        is ignored here).
+    """
     structs: List[str] = []
+    sequence: str | None = None
+
     with path.open() as fh:
         for line in fh:
             s = line.strip()
             if not s:
                 continue
+
+            if sequence is None:
+                # Heuristic: treat as sequence if it has no dot/bracket chars
+                if all(ch not in ".()[]{}<>" for ch in s):
+                    sequence = s
+                    continue
+
             structs.append(s)
+
     if not structs:
         raise ValueError(f"No structures found in {path}")
-    # sanity: all same length
+
     lengths = {len(s) for s in structs}
     if len(lengths) != 1:
-        raise ValueError(f"Structures in {path} have inconsistent lengths: {lengths}")
+        raise ValueError(
+            f"Structures in {path} have inconsistent lengths: {lengths}"
+        )
+
+    if sequence is not None and len(sequence) not in lengths:
+        raise ValueError(
+            f"Sequence length in {path} ({len(sequence)}) does not match "
+            f"structure length(s) {lengths}"
+        )
+
     return structs
+
 
 
 def find_unpaired_runs(struct: str, min_len: int) -> List[Tuple[int, int]]:
@@ -174,15 +212,21 @@ def find_unpaired_runs(struct: str, min_len: int) -> List[Tuple[int, int]]:
             i += 1
     return runs
 
-
 def find_terminal_unpaired_ends(struct: str, min_len: int) -> Tuple[int, int]:
     """
     Find unpaired runs at the 5' and 3' ends.
 
-    Returns (len_5prime, len_3prime). If either is < min_len, or if the entire
-    sequence is a single unpaired run, returns (0, 0).
+    Returns (len_5prime, len_3prime). If both ends are non-zero but
+    shorter than `min_len`, or if the entire sequence is a single unpaired
+    run, returns (0, 0).
+
+    Note: we treat an end as "terminal" if it has at least one '.', and we
+    only *gate* DuplexFold on whether at least one end is >= min_len. This
+    makes it possible to refine asymmetric cases like len_5=9, len_3=17
+    with min_len=15.
     """
     n = len(struct)
+
     # 5' end
     len_5 = 0
     for i in range(n):
@@ -203,7 +247,10 @@ def find_terminal_unpaired_ends(struct: str, min_len: int) -> Tuple[int, int]:
     if len_5 == n or len_3 == n:
         return 0, 0
 
-    if len_5 >= min_len and len_3 >= min_len:
+    # Require that both ends are present (non-zero), but only one of them
+    # needs to exceed the threshold. This is friendlier for asymmetric
+    # ends like 9/17 nt with min_len=15.
+    if len_5 > 0 and len_3 > 0 and (len_5 >= min_len or len_3 >= min_len):
         return len_5, len_3
     else:
         return 0, 0
@@ -221,8 +268,8 @@ def call_rnastructure_fold(
     Uses:
         Fold subseq.fa - -k -mfe -q [extra args]
 
-    Assumes that the bracket output has a line with only '().' of length len(subseq),
-    and returns the last such line.
+    Assumes that the bracket output has a line with only '().' of len
+    len(subseq). We take the *last* such line as the structure.
     """
     extra_args = list(extra_args) if extra_args is not None else []
 
@@ -230,7 +277,6 @@ def call_rnastructure_fold(
         tmpdir_path = Path(tmpdir)
         seq_path = tmpdir_path / "subseq.fa"
 
-        # Write subsequence as a one-record FASTA
         with seq_path.open("w") as fh:
             fh.write(">subseq\n")
             fh.write(subseq + "\n")
@@ -246,6 +292,10 @@ def call_rnastructure_fold(
         if temperature is not None:
             cmd.extend(["-T", str(temperature)])
         cmd.extend(extra_args)
+
+        sys.stderr.write(
+            f"[Fold] subseq_len={len(subseq)}; running: {' '.join(cmd)}\n"
+        )
 
         try:
             result = subprocess.run(
@@ -282,14 +332,29 @@ def call_rnastructure_duplexfold(
     seq3: str,
     temperature: float | None = None,
     extra_args: Sequence[str] | None = None,
-) -> List[Tuple[int, int]]:
+) -> List[List[Tuple[int, int]]]:
     """
     Call RNAstructure DuplexFold on two terminal subsequences.
 
-    Returns a list of base pairs as (i, j) in 1-based duplex coordinates, where
-    indices run from 1..len(seq5)+len(seq3), with seq5 first, then seq3.
+    Returns
+    -------
+    all_pairs : list of list of (i5, j3)
+        Outer list indexes the CT structure (1, 2, ...).
+        Inner list contains inter-strand base pairs in *local* 1-based
+        coordinates:
 
-    We only keep INTER-STRAND pairs (one index <= len(seq5), the other > len(seq5)).
+            i5 ∈ [1, len(seq5)]
+            j3 ∈ [1, len(seq3)]
+
+    Notes
+    -----
+    DuplexFold writes multiple CT structures by repeating:
+
+        header: "<N>  ENERGY = ..."
+        N lines: CT entries (indices 1..N)
+
+    The base identities and positions are the same for each block;
+    only the pairing column changes. We parse each block separately.
     """
     extra_args = list(extra_args) if extra_args is not None else []
 
@@ -303,20 +368,16 @@ def call_rnastructure_duplexfold(
         with seq5_path.open("w") as fh:
             fh.write(">seq5\n")
             fh.write(seq5 + "\n")
-
         with seq3_path.open("w") as fh:
             fh.write(">seq3\n")
             fh.write(seq3 + "\n")
 
-        cmd: List[str] = [
-            str(duplex_exe),
-            str(seq5_path),
-            str(seq3_path),
-            str(ct_path),
-        ]
+        cmd: List[str] = [str(duplex_exe), str(seq5_path), str(seq3_path), str(ct_path)]
         if temperature is not None:
-            cmd.extend(["-T", str(temperature)])
-        cmd.extend(extra_args)
+            cmd += ["-t", str(temperature)]
+        cmd += extra_args
+
+        sys.stderr.write(f"[DuplexFold] Running: {' '.join(cmd)}\n")
 
         try:
             result = subprocess.run(
@@ -334,64 +395,132 @@ def call_rnastructure_duplexfold(
             )
             raise
 
-        # Parse the CT file for base pairs.
         try:
             with ct_path.open() as fh:
-                lines = [ln.strip() for ln in fh if ln.strip()]
+                raw_lines = [ln.rstrip("\n") for ln in fh]
         except FileNotFoundError:
             raise RuntimeError(
                 f"DuplexFold did not produce CT file at {ct_path}. "
                 f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}\n"
             )
 
+        # Strip leading/trailing blank lines but keep internal structure
+        lines = [ln for ln in raw_lines if ln.strip()]
         if not lines:
+            sys.stderr.write("[DuplexFold] CT file empty; no pairs returned.\n")
             return []
-
-        # First line is header: "<N> <energy> ..."
-        try:
-            header_fields = lines[0].split()
-            total_nt = int(header_fields[0])
-        except Exception:
-            raise RuntimeError(
-                f"Could not parse CT header line: {lines[0]!r} "
-                f"in file {ct_path}"
-            )
 
         n1 = len(seq5)
         n2 = len(seq3)
-        if total_nt != n1 + n2:
-            sys.stderr.write(
-                f"[WARN] CT length {total_nt} != len(seq5)+len(seq3)={n1+n2}. "
-                "Proceeding anyway.\n"
-            )
+        valid_bases = set("ACGUT")  # treat others (e.g. I) as non-nucleotide
 
-        pairs: List[Tuple[int, int]] = []
-        max_valid = n1 + n2  # we only trust indices that map into our two strands
+        all_pair_sets: List[List[Tuple[int, int]]] = []
+        i = 0
 
-        for line in lines[1:]:
-            fields = line.split()
-            if len(fields) < 5:
+        while i < len(lines):
+            header = lines[i].strip()
+            if not header:
+                i += 1
                 continue
+
+            header_fields = header.split()
             try:
-                i = int(fields[0])
-                j = int(fields[4])
-            except ValueError:
-                continue
+                total_nt = int(header_fields[0])
+            except Exception:
+                # Not a CT header; stop parsing further
+                sys.stderr.write(
+                    f"[DuplexFold] Stopping CT parse at non-header line: {header!r}\n"
+                )
+                break
 
-            # Ignore unpaired or obviously bad entries
-            if i <= 0 or j <= 0:
-                continue
-            if i > total_nt or j > total_nt:
-                continue
+            # Ensure we have enough lines for this structure
+            if i + 1 + total_nt > len(lines):
+                sys.stderr.write(
+                    "[DuplexFold] Incomplete CT block at end of file; "
+                    "ignoring partial structure.\n"
+                )
+                break
 
-            if i > j:
-                i, j = j, i
+            body = lines[i + 1 : i + 1 + total_nt]
 
-            # Only keep inter-strand pairs whose indices also fit into our seq lengths
-            if i <= n1 < j <= max_valid:
-                pairs.append((i, j))
+            # --- Build CT index -> (strand, local_index) for this block --- #
+            ct_map: Dict[int, Tuple[int, int] | None] = {}
+            real_count = 0
 
-        return pairs
+            for ln in body:
+                fields = ln.split()
+                if len(fields) < 2:
+                    continue
+                try:
+                    idx = int(fields[0])
+                except ValueError:
+                    continue
+                base = fields[1].upper()
+
+                if base in valid_bases:
+                    real_count += 1
+                    if real_count <= n1:
+                        ct_map[idx] = (1, real_count)  # 5' strand
+                    elif real_count <= n1 + n2:
+                        ct_map[idx] = (2, real_count - n1)  # 3' strand
+                    else:
+                        ct_map[idx] = None
+                else:
+                    # 'I' or any other placeholder; not part of either RNA
+                    ct_map[idx] = None
+
+            if real_count != n1 + n2:
+                sys.stderr.write(
+                    f"[DuplexFold] WARNING: CT block at line {i+1} has {real_count} "
+                    f"real bases, but len(seq5)+len(seq3)={n1+n2}. "
+                    "Proceeding with mapped subset.\n"
+                )
+
+            # --- Extract inter-strand pairs for this structure --- #
+            pair_set: set[Tuple[int, int]] = set()
+
+            for ln in body:
+                fields = ln.split()
+                if len(fields) < 5:
+                    continue
+                try:
+                    idx_i = int(fields[0])
+                    idx_j = int(fields[4])
+                except ValueError:
+                    continue
+
+                if idx_j <= 0:
+                    continue
+
+                info_i = ct_map.get(idx_i)
+                info_j = ct_map.get(idx_j)
+                if not info_i or not info_j:
+                    continue
+
+                strand_i, pos_i = info_i
+                strand_j, pos_j = info_j
+                if strand_i == strand_j:
+                    continue
+
+                if strand_i == 1 and strand_j == 2:
+                    i5_local, j3_local = pos_i, pos_j
+                elif strand_i == 2 and strand_j == 1:
+                    i5_local, j3_local = pos_j, pos_i
+                else:
+                    continue
+
+                if 1 <= i5_local <= n1 and 1 <= j3_local <= n2:
+                    pair_set.add((i5_local, j3_local))
+
+            all_pair_sets.append(sorted(pair_set))
+            i += 1 + total_nt  # jump to next CT block
+
+        sys.stderr.write(
+            f"[DuplexFold] Parsed {len(all_pair_sets)} structure(s) from CT, "
+            "each with local 5'/3' indices.\n"
+        )
+        return all_pair_sets
+
 
 def refine_structure(
     struct: str,
@@ -416,35 +545,28 @@ def refine_structure(
     if cache is None:
         cache = {}
 
-    all_runs = find_unpaired_runs(struct, min_unpaired_len)
-    if not all_runs:
-        return struct
-
-    n = len(struct)
-    internal_runs: List[Tuple[int, int]] = []
-    for start, end in all_runs:
-        # Entire sequence unpaired: treat as an internal run.
-        if start == 0 and end == n:
-            internal_runs.append((start, end))
-        # 5' terminal run: start == 0, end < n  -> skip
-        elif start == 0 and end < n:
-            continue
-        # 3' terminal run: start > 0, end == n  -> skip
-        elif start > 0 and end == n:
-            continue
-        else:
-            internal_runs.append((start, end))
-
-    if not internal_runs:
-        # Nothing internal to refine
+    runs = find_unpaired_runs(struct, min_unpaired_len)
+    if not runs:
         return struct
 
     new_struct = list(struct)
-    extra_args_tuple = tuple(extra_args) if extra_args is not None else tuple()
+    n = len(struct)
 
-    for start, end in internal_runs:
+    for start, end in runs:
+        # Skip terminal runs here; DuplexFold handles them separately.
+        if start == 0 and end < n:
+            continue
+        if start > 0 and end == n:
+            continue
+
         subseq = full_seq[start:end]
+        extra_args_tuple = tuple(extra_args) if extra_args is not None else tuple()
         key = (subseq, temperature, extra_args_tuple)
+
+        sys.stderr.write(
+            f"[Refine] Internal run [{start}:{end}] (len={end-start}); "
+            f"subseq_len={len(subseq)}; cache_hit={key in cache}\n"
+        )
 
         if key in cache:
             local_db = cache[key]
@@ -482,33 +604,23 @@ def refine_structure(
 def refine_terminal_ends_with_duplex(
     struct: str,
     full_seq: str,
+    len_5: int,
+    len_3: int,
     duplex_exe: Path,
-    min_terminal_unpaired_len: int,
+    cache: Dict[Tuple[str, str, float | None, Tuple[str, ...]], List[List[Tuple[int, int]]]],
     temperature: float | None = None,
     extra_args: Sequence[str] | None = None,
-    cache: Dict[Tuple[str, str, float | None, Tuple[str, ...]], List[Tuple[int, int]]] | None = None,
-) -> str:
+) -> List[str]:
     """
-    If BOTH the 5' and 3' ends have long unpaired runs, refine them jointly using DuplexFold.
+    Refine terminal unpaired regions using DuplexFold.
 
-    The 5' terminal region (positions [0:len_5)) and 3' terminal region
-    (positions [n-len_3:n)) are extracted as separate strands and passed to DuplexFold.
-    Inter-strand base pairs are then mapped back into the global dot-bracket structure,
-    assigning '(' to 5' positions and ')' to 3' positions.
+    Returns multiple structures, one per DuplexFold CT structure.
+    If DuplexFold returns K alternative duplexes, the output list
+    will have length K (or 1 if DuplexFold produced nothing).
     """
-    if len(struct) != len(full_seq):
-        raise ValueError(
-            f"Structure length ({len(struct)}) does not match sequence length ({len(full_seq)})"
-        )
-
-    if cache is None:
-        cache = {}
-
     n = len(struct)
-    len_5, len_3 = find_terminal_unpaired_ends(struct, min_terminal_unpaired_len)
-    if len_5 == 0 or len_3 == 0:
-        # Nothing to do
-        return struct
+    if len(full_seq) != n:
+        raise ValueError("full_seq and struct must have same length")
 
     seq5 = full_seq[:len_5]
     seq3 = full_seq[n - len_3 :]
@@ -517,21 +629,29 @@ def refine_terminal_ends_with_duplex(
     key = (seq5, seq3, temperature, extra_args_tuple)
 
     if key in cache:
-        pairs = cache[key]
+        all_pair_sets = cache[key]
+        sys.stderr.write(
+            f"[DuplexRefine] Using cached DuplexFold result for len_5={len_5}, "
+            f"len_3={len_3}: {len(all_pair_sets)} structure(s).\n"
+        )
     else:
-        pairs = call_rnastructure_duplexfold(
+        all_pair_sets = call_rnastructure_duplexfold(
             duplex_exe=duplex_exe,
             seq5=seq5,
             seq3=seq3,
             temperature=temperature,
             extra_args=extra_args,
         )
-        cache[key] = pairs
+        cache[key] = all_pair_sets
 
-    if not pairs:
-        return struct
+    if not all_pair_sets:
+        # DuplexFold gave nothing; just return the original structure as-is
+        sys.stderr.write(
+            "[DuplexRefine] DuplexFold returned no structures; "
+            "leaving terminal ends unmodified.\n"
+        )
+        return [struct]
 
-    new_struct = list(struct)
     n1 = len(seq5)
     n2 = len(seq3)
     if n1 != len_5 or n2 != len_3:
@@ -540,44 +660,52 @@ def refine_terminal_ends_with_duplex(
             f"but seq5={n1}, seq3={n2}"
         )
 
-    # Map duplex indices back to global indices
-    for i, j in pairs:
-        # Inter-strand pairs were filtered in call_rnastructure_duplexfold;
-        # still handle both orientations just in case.
-        if i <= n1 < j:
-            idx5_local = i - 1
-            idx3_local = j - n1 - 1
-        elif j <= n1 < i:
-            idx5_local = j - 1
-            idx3_local = i - n1 - 1
-        else:
-            # Shouldn't happen, but skip intra-strand pairs if present
-            continue
+    def _is_canonical_pair(b5: str, b3: str) -> bool:
+        b5 = b5.upper()
+        b3 = b3.upper()
+        return (b5, b3) in {
+            ("A", "U"), ("U", "A"),
+            ("G", "C"), ("C", "G"),
+            ("G", "U"), ("U", "G"),  # wobble
+        }
 
-        # Extra safety: make sure the local indices are in bounds for the
-        # terminal segments we actually extracted.
-        if not (0 <= idx5_local < n1 and 0 <= idx3_local < n2):
-            # You could optionally log here if you want to see how often this happens:
-            sys.stderr.write(
-                f"[WARN] Skipping inconsistent DuplexFold pair (i={i}, j={j}) "
-                f"-> idx5_local={idx5_local}, idx3_local={idx3_local}, "
-                f"n1={n1}, n2={n2}\n"
-            )
-            continue
+    results: List[str] = []
 
-        idx5_global = idx5_local
-        idx3_global = n - n2 + idx3_local
+    for pair_set in all_pair_sets:
+        new_struct = list(struct)
 
-        # Only write the pair if BOTH ends are unpaired; otherwise skip the pair entirely.
-        if (
-            new_struct[idx5_global] == UNPAIRED_CHAR
-            and new_struct[idx3_global] == UNPAIRED_CHAR
-        ):
-            new_struct[idx5_global] = "("
-            new_struct[idx3_global] = ")"
-        # else: conflict with existing structure -> ignore this DuplexFold pair
+        for i5_local, j3_local in pair_set:
+            # Local 1-based → global 0-based
+            idx5_global = i5_local - 1
+            idx3_global = n - n2 + (j3_local - 1)
 
-    return "".join(new_struct)
+            if not (0 <= idx5_global < n and 0 <= idx3_global < n):
+                sys.stderr.write(
+                    f"[WARN] Skipping out-of-bounds DuplexFold mapping: "
+                    f"i5_local={i5_local}, j3_local={j3_local}, "
+                    f"idx5_global={idx5_global}, idx3_global={idx3_global}, n={n}\n"
+                )
+                continue
+
+            if (
+                new_struct[idx5_global] == UNPAIRED_CHAR
+                and new_struct[idx3_global] == UNPAIRED_CHAR
+            ):
+                b5 = full_seq[idx5_global]
+                b3 = full_seq[idx3_global]
+                if not _is_canonical_pair(b5, b3):
+                    sys.stderr.write(
+                        f"[WARN] Skipping non-canonical DuplexFold pair "
+                        f"{b5}{idx5_global+1}–{b3}{idx3_global+1}\n"
+                    )
+                    continue
+
+                new_struct[idx5_global] = "("
+                new_struct[idx3_global] = ")"
+
+        results.append("".join(new_struct))
+
+    return results
 
 def _check_balanced_parentheses(struct: str) -> bool:
     stack = []
@@ -774,17 +902,18 @@ def main(argv: Sequence[str] | None = None) -> None:
             sys.stderr.write(
                 f"[INFO] Structure {idx}: refining 5'({len_5}) and 3'({len_3}) unpaired ends with DuplexFold.\n"
             )
-            refined = refine_terminal_ends_with_duplex(
+            variants = refine_terminal_ends_with_duplex(
                 struct=refined,
                 full_seq=full_seq,
+		len_5=len_5,
+		len_3=len_3,
                 duplex_exe=duplex_exe,
-                min_terminal_unpaired_len=min_terminal,
-                temperature=args.temperature,
+                temperature=310,
                 extra_args=args.duplex_extra_arg,
                 cache=duplex_cache,
             )
 
-        refined_structs.append(refined)
+        refined_structs.append(variants)
 
     for idx, rs in enumerate(refined_structs):
         if not _check_balanced_parentheses(rs):
@@ -794,10 +923,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
     with db_out.open("w") as out_f:
+        out_f.write(full_seq + "\n")
         for rs in refined_structs:
             out_f.write(rs + "\n")
 
-    sys.stderr.write(f"[INFO] Wrote {len(refined_structs)} refined structures to {db_out}\n")
+    sys.stderr.write(
+        f"[INFO] Wrote {len(refined_structs)} refined structures to {db_out}\n"
+    )
 
 
 if __name__ == "__main__":

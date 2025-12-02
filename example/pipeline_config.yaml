@@ -1,0 +1,71 @@
+# Example pipeline config for seed-from-alignment
+#
+# This is designed to run inside the `example/` directory with the CaCoFold
+# outputs from the 9E5I cobalamin riboswitch test case.
+#
+# You can use YAML (as shown here) or JSON; the CLI will auto-detect based
+# on the file extension.
+
+# --- CaCoFold inputs ---
+sto: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.sto
+cov: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.cov
+seq_name: "9E5I_1_Chains"   # sequence ID in the .sto file
+
+# --- RNAstructure executables ---
+# Update these to point to your local RNAstructure installation.
+#fold_exe: "/path/to/RNAstructure/exe/Fold"
+fold_exe: "/home/lukas/research/RNAstructure/exe/Fold"
+#duplex_exe: "/path/to/RNAstructure/exe/DuplexFold"
+duplex_exe: "/home/lukas/research/RNAstructure/exe/DuplexFold"
+
+# --- Sampling parameters (pk sampler) ---
+sample:
+  n_samples: 100
+  burn_in: 1000
+  thin: 1000
+  min_loop_sep: 2
+  beta: 1
+  seed: 0
+  pk_alpha: 2
+  pk_filter_frac: 0.025
+  pk_filter_max_cross_per_pair: 4
+  pk_filter_max_total_cross: 20
+
+  cov_mode: "logE"          # "off", "score", "power", ...
+  cov_alpha: 2.0
+  cov_min_power: 100.0
+  cov_forbid_negative: False
+  cov_negative_E: 0.0
+
+# --- Refinement of long unpaired regions (RNAstructure Fold / DuplexFold) ---
+refine:
+  min_unpaired: 6               # internal '.' stretch length to trigger Fold
+  min_terminal_unpaired: 4      # 5'/3' terminal '.' stretch for DuplexFold
+  temperature: 310              # null => use RNAstructure default
+  fold_extra_args: []            # e.g. ["-si", "SHAPE.dat"]
+  duplex_extra_args: []          # extra args for DuplexFold if needed
+
+# --- Plausibility filter (ensure_valid) ---
+ensure_valid:
+  max_total_crossings: 20
+  max_crossings_per_pair: 4
+  max_pk_fraction: 0.20
+
+# --- Rosetta-ready / clustering ---
+rosetta:
+  hamming_threshold: 3
+  hamming_frac: 0.05
+  max_structures: 500
+
+# --- I/O layout ---
+io:
+  work_dir: "./pipeline_output"
+
+  # These are relative to work_dir:
+  consensus_db: "9E5I_consensus.db"
+  refined_db: "9E5I_refined_consensus.db"
+  sampled_db: "9E5I_sampled.db"
+  valid_db: "9E5I_sampled_valid.db"
+  rosetta_db: "9E5I_sampled_rosetta.db"
+  summary: "9E5I_summary_new.txt"
+
