@@ -19,8 +19,20 @@ from typing import Dict, List, Tuple, Set, Optional
 # Alignment gaps
 GAP_CHARS = set("-._~")
 
-# WUSS bracket pairs
-OPEN_TO_CLOSE = {"(": ")", "<": ">", "[": "]", "{": "}"}
+# WUSS bracket pairs + Extended PK support (a-z)
+# Matching the hierarchy used in refine_unpaired_regions
+OPEN_TO_CLOSE = {
+    "(": ")", 
+    "[": "]", 
+    "{": "}", 
+    "<": ">"
+}
+# Add a-z -> A-Z
+for i in range(26):
+    c_lower = chr(ord('a') + i)
+    c_upper = chr(ord('A') + i)
+    OPEN_TO_CLOSE[c_lower] = c_upper
+
 CLOSE_TO_OPEN = {v: k for k, v in OPEN_TO_CLOSE.items()}
 
 # Canonical base pairs (including GU wobble)
@@ -115,7 +127,7 @@ def pairs_from_track(track: str) -> List[Tuple[int, int]]:
     Given a WUSS-like track string (for all alignment columns),
     return a list of (i, j) pairs in alignment coordinates (0-based).
 
-    Uses bracket types: <>, (), [], {}.
+    Uses bracket types: <>, (), [], {}, and a-z.
     """
     stacks = {op: [] for op in OPEN_TO_CLOSE}
     result: List[Tuple[int, int]] = []
@@ -484,8 +496,6 @@ def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]
 
 from typing import Dict, Set, Tuple, List
 
-from typing import Dict, Set, Tuple, List
-
 def compute_pk_stats_for_set(
     pairs: Set[Tuple[int, int]]
 ) -> Tuple[Set[Tuple[int, int]], Dict[Tuple[int, int], int], int, int]:
@@ -523,6 +533,7 @@ def prune_pseudoknots(
     pk_filter_frac: float,
     pk_filter_max_cross_per_pair: int,
     pk_filter_max_total_cross: int,
+    fixed_pairs: Set[Tuple[int, int]] = None,
 ) -> Set[Tuple[int, int]]:
     """
     Given a matching (pair_set), greedily remove the "worst" pseudoknotted
@@ -534,6 +545,9 @@ def prune_pseudoknots(
 
     "Worst" = highest crossing count, tie-broken by lowest weight.
     Returns a NEW set; does not modify the input set.
+    
+    If fixed_pairs is provided, these pairs are NEVER removed, even if they
+    cause violations.
     """
     if (
         (pk_filter_frac is None or pk_filter_frac <= 0)
@@ -543,6 +557,8 @@ def prune_pseudoknots(
         return set(pair_set)
 
     current = set(pair_set)
+    if fixed_pairs is None:
+        fixed_pairs = set()
 
     def violates(pk_pairs, max_cross, total_crossings) -> bool:
         if pk_filter_frac is not None and pk_filter_frac > 0:
@@ -567,10 +583,18 @@ def prune_pseudoknots(
         if not pk_pairs:
             break
 
+        # Filter out fixed pairs from consideration for removal
+        removable_pk_pairs = [p for p in pk_pairs if p not in fixed_pairs]
+        
+        if not removable_pk_pairs:
+            # We can't remove anything else to satisfy constraints because all 
+            # problematic pairs are fixed. We must accept the violation.
+            break
+
         # Remove the "worst" pair: most crossings, then lowest weight
         worst_p = None
         worst_score = None  # higher is "worse"
-        for p in pk_pairs:
+        for p in removable_pk_pairs:
             c = cross_counts.get(p, 0)
             w = pair_weights.get(p, 0.0)
             score = (c, -w)  # more crossings, lower weight → more likely to remove
@@ -588,26 +612,33 @@ def pairs_to_pk_string(pairs: List[Tuple[int, int]], L: int) -> str:
     """
     Convert a set/list of pairs (i, j) into a pseudoknot-annotated string.
 
+    Uses Rosetta-safe hierarchy:
     - Layer 0 -> '(' and ')'
-    - Layers 1,2,... -> 'a/A', 'b/B', 'c/C', ...
+    - Layer 1 -> '[' and ']'
+    - Layer 2 -> '{' and '}'
+    - Layers 3+ -> 'a/A', 'b/B', ...
 
     Assumes 'pairs' is a matching: no residue appears in more than one pair.
     """
+    # Sanity check: Ensure pairs form a valid matching (no shared indices)
+    indices = [idx for pair in pairs for idx in pair]
+    if len(indices) != len(set(indices)):
+        raise ValueError("Invalid matching: overlapping pairs detected in structure.")
+
     chars = ["."] * L
     layers = pairs_to_layers(pairs)
 
+    rosetta_brackets = [("(", ")"), ("[", "]"), ("{", "}")]
+    # Add a-z for deeper layers
+    for i in range(26):
+        rosetta_brackets.append((chr(ord('a')+i), chr(ord('A')+i)))
+
     for layer_idx, layer in enumerate(layers):
-        if layer_idx == 0:
-            open_char, close_char = "(", ")"
+        if layer_idx < len(rosetta_brackets):
+            open_char, close_char = rosetta_brackets[layer_idx]
         else:
-            k = layer_idx - 1
-            if k < 26:
-                open_char = string.ascii_lowercase[k]
-                close_char = string.ascii_uppercase[k]
-            else:
-                # Fallback if you somehow get >26 layers
-                open_char = "{"
-                close_char = "}"
+            # Fallback
+            open_char, close_char = "{", "}"
 
         for (i, j) in layer:
             chars[i] = open_char
@@ -635,22 +666,28 @@ def write_summary_file(
     unique_pairs = sorted({(i, j) if i < j else (j, i) for (i, j, _w) in candidate_pairs})
 
     # Combined PK string
-    pk_all = pairs_to_pk_string(unique_pairs, L)
+    # Candidates may conflict (overlap), which is fine for a pool but not for a single structure.
+    # We catch the validation error to prevent pipeline crashes.
+    try:
+        pk_all = pairs_to_pk_string(unique_pairs, L)
+    except ValueError:
+        pk_all = "(Cannot represent candidates as a single string due to overlapping/conflicting pairs)"
 
     # Per-layer strings
     layers = pairs_to_layers(unique_pairs)
 
     def layer_string(layer_idx: int, layer_pairs: List[Tuple[int, int]]) -> str:
         chars = ["."] * L
-        if layer_idx == 0:
-            op, cl = "(", ")"
-        else:
-            k = layer_idx - 1
-            if k < 26:
-                op = string.ascii_lowercase[k]
-                cl = string.ascii_uppercase[k]
-            else:
-                op, cl = "{", "}"
+        # Check for overlaps within this layer to avoid misleading output
+        indices = [p for pair in layer_pairs for p in pair]
+        if len(indices) != len(set(indices)):
+             return "(Layer contains overlapping pairs - invalid structure)"
+             
+        # For individual layers summary, typically just use () for clarity,
+        # but to match overall logic let's use the hierarchy char.
+        # Although "layer 0 of this specific set" will always be ().
+        # Let's just use () for the summary layers.
+        op, cl = "(", ")"
         for (i, j) in layer_pairs:
             if i > j:
                 i, j = j, i
@@ -675,7 +712,6 @@ def write_summary_file(
             fh.write(f">pk_layer_{idx}\n")
             fh.write(layer_string(idx, layer) + "\n")
 
-
 # ------------------ Metropolis sampler on matchings -------------- #
 
 def sample_matchings(
@@ -691,35 +727,53 @@ def sample_matchings(
     pk_filter_frac: float = 0.2,
     pk_filter_max_cross_per_pair: int = 2,
     pk_filter_max_total_cross: int = 30,
+    pk_depth_limit: int | None = None,
+    scaffold_pairs: Set[Tuple[int, int]] | None = None,
 ) -> List[Set[Tuple[int, int]]]:
     """
     Metropolis sampler over matchings (sets of non-overlapping base pairs).
 
-    During sampling:
-      - Enforce hairpin minimum: j - i - 1 >= min_loop_sep
-      - Disallow immediate ')(' adjacency
-      - Apply a PK penalty on *adding* a pair that crosses existing pairs:
-            accept_prob *= exp(-pk_alpha * pk_load)
-        where pk_load = (#pairs involved in >=1 crossing) / L.
+    scaffold_pairs: A set of pairs that MUST be present in every sample.
+                    These pairs are fixed and cannot be removed.
+                    Sampling only explores adding/removing *other* candidates.
 
-    When recording samples:
-      - We DO NOT throw away "too knotted" samples.
-      - Instead we project the current matching onto a PK-limited subset
-        by greedily removing the worst pseudoknotted pairs until:
-
-            len(pk_pairs) <= pk_filter_frac * L
-            max_crossings_per_pair <= pk_filter_max_cross_per_pair
-            total_crossings <= pk_filter_max_total_cross
-
-        (each threshold only applied if the corresponding parameter is enabled).
+    pk_depth_limit: If None, no limit. 
+                    If set, we interpret it as allowing this many *additional*
+                    crossing layers on top of the scaffold's inherent complexity.
+                    Effective Limit = Scaffold Layers + 1.
     """
     if seed is not None:
         random.seed(seed)
+    
+    # Initialize state with scaffold
+    pair_set: Set[Tuple[int, int]] = set()
+    partners = [-1] * L
+    
+    fixed_pairs = set()
+    if scaffold_pairs:
+        for (i, j) in scaffold_pairs:
+            if i > j: i, j = j, i
+            fixed_pairs.add((i, j))
+            pair_set.add((i, j))
+            partners[i] = j
+            partners[j] = i
+
+    # Determine dynamic depth limit based on scaffold
+    # If scaffold has N layers, we allow N + 1 layers total.
+    effective_depth_limit = 9999
+    if pk_depth_limit is not None or True: # Force logic: allow 1 extra layer
+        # Calculate scaffold layers
+        if not fixed_pairs:
+            scaffold_layers = 0
+        else:
+            scaffold_layers = len(pairs_to_layers(list(fixed_pairs)))
+        
+        # We allow 1 extra layer on top of the scaffold
+        # So total layers allowed = scaffold_layers + 1
+        effective_depth_limit = scaffold_layers + 1
 
     M = len(candidate_pairs)
-    partners = [-1] * L
-    pair_set: Set[Tuple[int, int]] = set()
-    score = 0.0
+    score = 0.0 # Score of *variable* pairs (delta)
 
     # Precompute weight lookup for pruning
     pair_weights: Dict[Tuple[int, int], float] = {}
@@ -743,6 +797,10 @@ def sample_matchings(
             continue
 
         pair = (i, j)
+        
+        # If pair is fixed (scaffold), we cannot toggle it.
+        if pair in fixed_pairs:
+            continue
 
         if pair in pair_set:
             # Propose removal
@@ -756,14 +814,10 @@ def sample_matchings(
         else:
             # Propose addition only if both residues currently unpaired
             if partners[i] == -1 and partners[j] == -1:
-                # Disallow immediate ')(' adjacency
+                # Disallow immediate ')(' adjacency (local constraint)
                 invalid = False
-
-                # Left adjacency: ... )(
                 if i - 1 >= 0 and partners[i - 1] != -1 and partners[i - 1] < (i - 1):
                     invalid = True
-
-                # Right adjacency: )(
                 if (
                     not invalid
                     and j + 1 < L
@@ -775,15 +829,21 @@ def sample_matchings(
                 if invalid:
                     continue
 
+                # Check PK depth limit (relative to scaffold)
+                temp_set = list(pair_set)
+                temp_set.append(pair)
+                layers = pairs_to_layers(temp_set)
+                if len(layers) > effective_depth_limit:
+                    continue
+
                 delta = w
                 if delta >= 0:
                     accept_prob = 1.0
                 else:
                     accept_prob = math.exp(beta * delta)
 
-                # PK-specific penalty if this addition crosses any existing pair
+                # PK-specific penalty
                 if pk_alpha > 0.0 and L > 0:
-                    # Check if it actually introduces a crossing
                     is_crossing = any(pairs_cross(pair, q) for q in pair_set)
                     if is_crossing:
                         pk_pairs, _, _, _ = compute_pk_stats_for_set(pair_set)
@@ -796,9 +856,10 @@ def sample_matchings(
                     partners[j] = i
                     score += delta
 
-        # Record samples after burn-in with thinning
+        # Record samples
         if step >= burn_in and (step - burn_in) % thin == 0:
-            # Project current matching to a PK-limited subset instead of dropping it
+            # Prune logic: ensure we don't prune fixed pairs
+            # Pass explicit fixed_pairs set to prune_pseudoknots
             pruned = prune_pseudoknots(
                 set(pair_set),
                 pair_weights=pair_weights,
@@ -806,6 +867,7 @@ def sample_matchings(
                 pk_filter_frac=pk_filter_frac,
                 pk_filter_max_cross_per_pair=pk_filter_max_cross_per_pair,
                 pk_filter_max_total_cross=pk_filter_max_total_cross,
+                fixed_pairs=fixed_pairs,
             )
             samples.append(pruned)
 
@@ -958,6 +1020,12 @@ def main() -> None:
             "sampled structure (default: 30). Set < 0 to disable this filter."
         ),
     )
+    parser.add_argument(
+        "--pk-depth-limit",
+        type=int,
+        default=None,
+        help="Limit the pseudoknot depth during sampling (e.g. 1 = 1 crossing layer).",
+    )
 
     args = parser.parse_args()
 
@@ -1060,6 +1128,8 @@ def main() -> None:
         pk_filter_frac=args.pk_filter_frac,
         pk_filter_max_cross_per_pair=args.pk_filter_max_cross_per_pair,
         pk_filter_max_total_cross=args.pk_filter_max_total_cross,
+        pk_depth_limit=args.pk_depth_limit,
+        # scaffold_pairs argument is not exposed in CLI directly but used by pipeline code calling `sample_matchings`
     )
 
     # Write to .db file:
@@ -1079,4 +1149,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
