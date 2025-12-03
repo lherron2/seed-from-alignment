@@ -371,56 +371,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             "to Rosetta-compatible dot-parens notation."
         )
     )
-<<<<<<< HEAD
-    parser.add_argument(
-        "--db-in",
-        required=True,
-        help=".db file with one dot-bracket structure per line.",
-    )
-    parser.add_argument(
-        "--db-out",
-        required=True,
-        help="Output .db file with filtered + Rosetta-compatible structures.",
-    )
-    parser.add_argument(
-        "--hamming-threshold",
-        type=int,
-        default=0,
-        help=(
-            "Hamming distance threshold for merging similar structures. "
-            "0 => no merging (only exact dedup). Typical values: 2 or 3."
-        ),
-    )
-    parser.add_argument(
-        "--hamming-frac",
-        type=float,
-        default=0.0,
-        help=(
-            "If --hamming-threshold == 0, choose an adaptive threshold "
-            "as round(hamming_frac * L), where L is the structure length. "
-            "Set hamming_frac <= 0 to disable Hamming merging."
-        ),
-    )
-    parser.add_argument(
-        "--max-structures",
-        type=int,
-        default=None,
-        help="Optional cap on number of structures to keep after filtering.",
-    )
-    parser.add_argument(
-        "--sto",
-        help=(
-            "CaCoFold/R-scape Stockholm (.sto) file containing the alignment "
-            "for this RNA (used to obtain the ungapped sequence when pruning "
-            "non-complementary base pairs)."
-        ),
-    )
-    parser.add_argument(
-        "--seq-name",
-        help=("Name of sequence in .sto file."
-        ),
-    )
-=======
     parser.add_argument("--db-in", required=True)
     parser.add_argument("--db-out", required=True)
     parser.add_argument("--hamming-threshold", type=int, default=0)
@@ -428,7 +378,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--max-structures", type=int, default=None)
     parser.add_argument("--sto", help="CaCoFold/R-scape Stockholm (.sto) file")
     parser.add_argument("--seq-name", help="Name of sequence in .sto file.")
->>>>>>> 7916038 (Uodate)
 
     args = parser.parse_args(argv)
     db_in = Path(args.db_in)
@@ -438,37 +387,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"[INFO] Read {len(structs)} structures from {db_in}")
 
     structs = deduplicate(structs)
-<<<<<<< HEAD
-    #print(f"[INFO] After deduplication: {len(structs)} unique structures")
-
-    ## 2) Determine Hamming threshold (static or adaptive)
-    #L = len(structs[0])
-
-    ## Start from user-specified threshold
-    #threshold = args.hamming_threshold
-
-    #if threshold == 0:
-    #    # Use adaptive threshold based on structure length
-    #    if args.hamming_frac > 0.0:
-    #        threshold = max(1, int(round(args.hamming_frac * L)))
-    #        print(
-    #            f"[INFO] Using adaptive Hamming threshold: "
-    #            f"threshold = round({args.hamming_frac} * {L}) = {threshold}"
-    #        )
-    #    else:
-    #        threshold = 0
-    #        print("[INFO] Hamming merging disabled (hamming_frac <= 0 and threshold == 0)")
-    #else:
-    #    print(f"[INFO] Using fixed Hamming threshold: {threshold}")
-
-    ## 3) Greedy Hamming-based merging (optional)
-    #if threshold > 0:
-    #    structs = merge_by_hamming(structs, threshold)
-    #    print(
-    #        f"[INFO] After Hamming merge (threshold={threshold}): "
-    #        f"{len(structs)} structures"
-    #    )
-=======
     L = len(structs[0])
     threshold = args.hamming_threshold
 
@@ -478,7 +396,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     
     if threshold > 0:
         structs = merge_by_hamming(structs, threshold)
->>>>>>> 7916038 (Uodate)
 
     if args.max_structures is not None and len(structs) > args.max_structures:
         structs = structs[: args.max_structures]
