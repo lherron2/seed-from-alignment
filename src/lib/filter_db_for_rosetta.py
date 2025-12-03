@@ -1,38 +1,6 @@
 """
 Filter/cluster an ensemble of secondary structures in .db format
 and convert them to Rosetta-compatible dot-parens notation.
-
-Features
---------
-1. Read a .db file with one dot-bracket structure per line.
-2. Remove exact duplicates (always).
-3. Optional greedy merging based on Hamming distance:
-   - For each structure, if it is within a threshold of any already-kept
-     representative, it is discarded (merged).
-4. Convert the remaining structures to Rosetta notation:
-
-   Rosetta pair types (in order of assignment):
-       1. ()  (main nested structure)
-       2. []
-       3. {}
-       4. aA
-       5. bB
-       6. cC
-       7. dD
-       ...
-
-   Mapping rule:
-       - Keep () as ().
-       - For all other CaCoFold pair types ([], {}, <>, aA, bB, cC, ...),
-         assign them to the next available Rosetta pair type in that order,
-         based on *order of first appearance* in the structure.
-
-So, for example, if a structure uses () + aA + bB + cC (and no [] or {}),
-you get:
-    () -> ()
-    aA -> []
-    bB -> {}
-    cC -> aA
 """
 
 from __future__ import annotations
@@ -41,21 +9,50 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable, Sequence
 import sys
+import string
 
 GAP_CHARS = set("-._~")
 
-GAP_CHARS = set("-._~")
+# Copying logic from sample_cacofold_structures to ensure clean layering
+OPEN_TO_CLOSE_LAYER = {"(": ")", "[": "]", "{": "}"}
+CLOSE_TO_OPEN_LAYER = {v: k for k, v in OPEN_TO_CLOSE_LAYER.items()}
+
+def pairs_cross(p: Tuple[int, int], q: Tuple[int, int]) -> bool:
+    """
+    Return True if arcs (i, j) and (k, l) cross (pseudoknot).
+    """
+    i, j = p
+    k, l = q
+    if i > j:
+        i, j = j, i
+    if k > l:
+        k, l = l, k
+    return (i < k < j < l) or (k < i < l < j)
+
+
+def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    """
+    Given a list of pairs (i, j), partition them into layers so that
+    within each layer there are no crossing arcs.
+    """
+    layers: List[List[Tuple[int, int]]] = []
+
+    for p in sorted(pairs):
+        placed = False
+        for layer in layers:
+            if any(pairs_cross(p, q) for q in layer):
+                continue
+            layer.append(p)
+            placed = True
+            break
+        if not placed:
+            layers.append([p])
+
+    return layers
 
 def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
     """
     Read the ungapped RNA sequence for `seq_name` from a Stockholm (.sto) file.
-
-    - Concatenates segments for each sequence name.
-    - Strips alignment gaps.
-    - Uppercases and converts DNA T -> RNA U so downstream code sees
-      a consistent RNA alphabet.
-
-    If seq_name is None, use the first sequence in the file.
     """
     sequences: Dict[str, List[str]] = {}
 
@@ -122,12 +119,6 @@ def read_fasta_sequence(path: Path) -> str:
 def is_complementary(base1: str, base2: str, allow_wobble: bool = True) -> bool:
     """
     Heuristic complementarity check mimicking Rosetta's expectations.
-
-    - Normalizes DNA 'T' -> RNA 'U'.
-    - If both bases are unambiguous RNA (A/C/G/U), require canonical
-      Watson–Crick pairing (AU, UA, GC, CG) plus optional GU wobble.
-    - If either base is ambiguous (not A/C/G/U), we *do not* force
-      pruning: we return True so the pair is kept.
     """
     def _norm(b: str) -> str:
         b = b.upper()
@@ -156,15 +147,15 @@ def prune_noncomplementary_pairs(
     """
     Given a dot-bracket structure (Rosetta notation) and its sequence,
     remove any base pairs that are not between complementary nucleotides.
-
-    This applies to *all* bracket types, including `()`. Rosetta's
-    RNA_SecStruct requires every pair to be canonical (AU/UA/GC/CG and
-    optionally GU/UG), so we cannot keep non-canonical pairs even if they
-    originated from RNAstructure.
     """
+    if struct is None:
+        raise ValueError("Structure passed to prune_noncomplementary_pairs is None.")
+    if seq is None:
+        raise ValueError("Sequence passed to prune_noncomplementary_pairs is None.")
+
     if len(struct) != len(seq):
         raise ValueError(
-            f"Structure length ({len(struct)}) and sequence length ({len(seq)}) do not match"
+            f"Structure length ({len(struct)}) and sequence length ({len(seq)}) do not match."
         )
 
     pairs = _parse_pairs(struct)
@@ -189,15 +180,6 @@ def prune_noncomplementary_pairs(
 def read_db_structures(path: Path) -> List[str]:
     """
     Read structures from a .db file.
-
-    Supports:
-
-      1. Legacy format: one structure per non-empty line.
-      2. New format:    first non-empty line is an ungapped sequence
-                       (no dot/bracket chars), remaining lines are
-                       dot-bracket structures.
-
-    Returns only the structures (sequence header is ignored).
     """
     structs: List[str] = []
     sequence: str | None = None
@@ -218,18 +200,6 @@ def read_db_structures(path: Path) -> List[str]:
     if not structs:
         raise ValueError(f"No structures found in {path}")
 
-    lengths = {len(s) for s in structs}
-    if len(lengths) != 1:
-        raise ValueError(
-            f"Inconsistent structure lengths in {path}: {lengths}"
-        )
-
-    if sequence is not None and len(sequence) not in lengths:
-        raise ValueError(
-            f"Sequence length in {path} ({len(sequence)}) does not match "
-            f"structure length(s) {lengths}"
-        )
-
     return structs
 
 def write_db_structures(
@@ -239,9 +209,6 @@ def write_db_structures(
 ) -> None:
     """
     Write a .db file.
-
-    If `seq` is provided, it is written as the first line,
-    then one structure per line.
     """
     with path.open("w") as fh:
         if seq is not None:
@@ -255,12 +222,6 @@ def write_db_structures(
 # -------------------------------------------------------------
 
 def hamming_leq(a: str, b: str, threshold: int) -> bool:
-    """
-    Return True if Hamming(a, b) <= threshold, False otherwise.
-
-    Optimized for small thresholds:
-        - Early-exit as soon as mismatches exceed threshold.
-    """
     if len(a) != len(b):
         raise ValueError("Hamming distance requires equal-length strings")
 
@@ -274,11 +235,6 @@ def hamming_leq(a: str, b: str, threshold: int) -> bool:
 
 
 def count_paired(s: str) -> int:
-    """
-    Count the number of paired positions (i.e., non-dot) in the structure.
-    This is a cheap prefilter: if |paired(a) - paired(b)| > threshold,
-    they cannot be within Hamming distance <= threshold.
-    """
     return sum(ch != "." for ch in s)
 
 
@@ -286,21 +242,6 @@ def merge_by_hamming(
     structs: list[str],
     threshold: int,
 ) -> list[str]:
-    """
-    Greedy diversity filter based on Hamming distance with optimizations:
-
-    - Always keeps the first structure.
-    - For each subsequent structure s:
-        * First do a cheap filter on paired count vs each kept rep:
-              |paired(s) - paired(rep)| <= threshold
-          otherwise skip rep entirely.
-        * If it passes that, use hamming_leq(s, rep, threshold) which
-          early-exits once mismatches > threshold.
-        * If s is within threshold of ANY rep, s is discarded.
-        * Otherwise s starts a new cluster (rep).
-
-    threshold <= 0 => no merging (returns input as-is).
-    """
     if threshold <= 0:
         return structs
 
@@ -312,11 +253,8 @@ def merge_by_hamming(
         keep = True
 
         for r, paired_r in zip(reps, rep_paired):
-            # Cheap prefilter on number of paired positions
             if abs(paired_s - paired_r) > threshold:
                 continue
-
-            # Full Hamming check with early exit
             if hamming_leq(s, r, threshold):
                 keep = False
                 break
@@ -329,7 +267,6 @@ def merge_by_hamming(
 
 
 def deduplicate(structs: List[str]) -> List[str]:
-    """Preserve order while removing exact duplicates."""
     seen = set()
     out: List[str] = []
     for s in structs:
@@ -346,27 +283,17 @@ def deduplicate(structs: List[str]) -> List[str]:
 def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
     """
     Parse a generic CaCoFold-style dot-bracket string into pairs.
-
-    Supports:
-        - () [] {} <>   (usual bracket types)
-        - aA, bB, cC, ... (letters: open = lowercase, close = uppercase)
-
-    Returns:
-        List of (i, j, open_char) pairs, with i < j.
     """
-    # open -> close mapping
     OPEN_TO_CLOSE: Dict[str, str] = {
         "(": ")",
         "[": "]",
         "{": "}",
         "<": ">",
-        # letters a-z use A-Z as closers
         **{chr(ord("a") + i): chr(ord("A") + i) for i in range(26)},
     }
 
     CLOSE_TO_OPEN: Dict[str, str] = {v: k for k, v in OPEN_TO_CLOSE.items()}
 
-    # stacks for open characters
     stacks: Dict[str, List[int]] = {op: [] for op in OPEN_TO_CLOSE}
     pairs: List[Tuple[int, int, str]] = []
 
@@ -388,11 +315,9 @@ def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
             continue
         else:
             raise ValueError(
-                f"Unexpected character '{ch}' in structure. "
-                f"Add it to OPEN_TO_CLOSE/CLOSE_TO_OPEN if it is a valid pair symbol."
+                f"Unexpected character '{ch}' in structure."
             )
 
-    # Check unmatched opens
     for op, st in stacks.items():
         if st:
             raise ValueError(
@@ -405,73 +330,34 @@ def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
 def convert_to_rosetta_notation(struct: str) -> str:
     """
     Convert a generic CaCoFold dot-bracket string to Rosetta-compatible notation.
-
-    Rosetta pair types (in order of assignment):
-        1. ()       (main)
-        2. []       (first pseudoknot)
-        3. {}       (second pseudoknot)
-        4. aA       (third)
-        5. bB       (fourth)
-        6. cC       (fifth)
-        ...
-    Mapping rule:
-        - Keep () -> ().
-        - For all other CaCoFold pair types ([], {}, <>, aA, bB, cC, ...),
-          assign them to the next available Rosetta pair type in that order,
-          based on *order of first appearance* in the structure.
     """
-    pairs = _parse_pairs(struct)
+    parsed = _parse_pairs(struct)
+    pairs = [(i, j) for i, j, _ in parsed]
+    
+    # Sanity check: Ensure input structure didn't contain overlapping pairs
+    indices = [idx for pair in pairs for idx in pair]
+    if len(indices) != len(set(indices)):
+        raise ValueError("Invalid matching: overlapping pairs detected in input structure.")
+
     n = len(struct)
-
-    # Rosetta pair types in order
-    rosetta_types: List[Tuple[str, str]] = [
-        ("(", ")"),
-        ("[", "]"),
-        ("{", "}"),
-    ] + [(chr(ord("a") + i), chr(ord("A") + i)) for i in range(26)]
-
-    # Determine order of first appearance of each pair type
-    first_pos: Dict[str, int] = {}
-    for i, j, op in pairs:
-        pos = i  # where this pair opens
-        if op not in first_pos or pos < first_pos[op]:
-            first_pos[op] = pos
-
-    # Sort pair types by first appearance
-    types_in_order = sorted(first_pos.keys(), key=lambda op: first_pos[op])
-
-    # Build mapping from CaCoFold pair type -> Rosetta pair type
-    mapping: Dict[str, Tuple[str, str]] = {}
-
-    # First: handle main '()' explicitly
-    if "(" in types_in_order:
-        mapping["("] = rosetta_types[0]  # () -> ()
-        # Remaining types, excluding '('
-        other_types = [t for t in types_in_order if t != "("]
-        start_idx = 1  # start assigning from '[]'
-    else:
-        # No parentheses at all; just assign everything from the top
-        other_types = types_in_order
-        start_idx = 0
-
-    # Assign other types sequentially to the remaining Rosetta pair types
-    for k, op in enumerate(other_types):
-        idx = start_idx + k
-        if idx >= len(rosetta_types):
-            raise RuntimeError(
-                f"Ran out of Rosetta pair types (more than {len(rosetta_types)} "
-                f"unique pair types encountered)."
-            )
-        mapping[op] = rosetta_types[idx]
-
-    # Build the output structure
-    new_struct = ["." for _ in range(n)]
-    for i, j, op in pairs:
-        open_out, close_out = mapping[op]
-        new_struct[i] = open_out
-        new_struct[j] = close_out
-
-    return "".join(new_struct)
+    layers = pairs_to_layers(pairs)
+    
+    new_chars = ["."] * n
+    
+    rosetta_brackets = [("(", ")"), ("[", "]"), ("{", "}")]
+    rosetta_brackets += [(chr(ord("a") + i), chr(ord("A") + i)) for i in range(26)]
+    
+    for layer_idx, layer_pairs in enumerate(layers):
+        if layer_idx < len(rosetta_brackets):
+            op, cl = rosetta_brackets[layer_idx]
+        else:
+            op, cl = "{", "}"
+            
+        for i, j in layer_pairs:
+            new_chars[i] = op
+            new_chars[j] = cl
+            
+    return "".join(new_chars)
 
 
 # -------------------------------------------------------------
@@ -485,54 +371,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             "to Rosetta-compatible dot-parens notation."
         )
     )
-    parser.add_argument(
-        "--db-in",
-        required=True,
-        help=".db file with one dot-bracket structure per line.",
-    )
-    parser.add_argument(
-        "--db-out",
-        required=True,
-        help="Output .db file with filtered + Rosetta-compatible structures.",
-    )
-    parser.add_argument(
-        "--hamming-threshold",
-        type=int,
-        default=0,
-        help=(
-            "Hamming distance threshold for merging similar structures. "
-            "0 => no merging (only exact dedup). Typical values: 2 or 3."
-        ),
-    )
-    parser.add_argument(
-        "--hamming-frac",
-        type=float,
-        default=0.05,
-        help=(
-            "If --hamming-threshold == 0, choose an adaptive threshold "
-            "as round(hamming_frac * L), where L is the structure length. "
-            "Set hamming_frac <= 0 to disable Hamming merging."
-        ),
-    )
-    parser.add_argument(
-        "--max-structures",
-        type=int,
-        default=None,
-        help="Optional cap on number of structures to keep after filtering.",
-    )
-    parser.add_argument(
-        "--sto",
-        help=(
-            "CaCoFold/R-scape Stockholm (.sto) file containing the alignment "
-            "for this RNA (used to obtain the ungapped sequence when pruning "
-            "non-complementary base pairs)."
-        ),
-    )
-    parser.add_argument(
-        "--seq-name",
-        help=("Name of sequence in .sto file."
-        ),
-    )
+    parser.add_argument("--db-in", required=True)
+    parser.add_argument("--db-out", required=True)
+    parser.add_argument("--hamming-threshold", type=int, default=0)
+    parser.add_argument("--hamming-frac", type=float, default=0.05)
+    parser.add_argument("--max-structures", type=int, default=None)
+    parser.add_argument("--sto", help="CaCoFold/R-scape Stockholm (.sto) file")
+    parser.add_argument("--seq-name", help="Name of sequence in .sto file.")
 
     args = parser.parse_args(argv)
     db_in = Path(args.db_in)
@@ -541,94 +386,35 @@ def main(argv: Sequence[str] | None = None) -> None:
     structs = read_db_structures(db_in)
     print(f"[INFO] Read {len(structs)} structures from {db_in}")
 
-    # 1) Remove exact duplicates
     structs = deduplicate(structs)
-    print(f"[INFO] After deduplication: {len(structs)} unique structures")
-
-    # 2) Determine Hamming threshold (static or adaptive)
     L = len(structs[0])
-
-    # Start from user-specified threshold
     threshold = args.hamming_threshold
 
     if threshold == 0:
-        # Use adaptive threshold based on structure length
         if args.hamming_frac > 0.0:
             threshold = max(1, int(round(args.hamming_frac * L)))
-            print(
-                f"[INFO] Using adaptive Hamming threshold: "
-                f"threshold = round({args.hamming_frac} * {L}) = {threshold}"
-            )
-        else:
-            threshold = 0
-            print("[INFO] Hamming merging disabled (hamming_frac <= 0 and threshold == 0)")
-    else:
-        print(f"[INFO] Using fixed Hamming threshold: {threshold}")
-
-    # 3) Greedy Hamming-based merging (optional)
+    
     if threshold > 0:
         structs = merge_by_hamming(structs, threshold)
-        print(
-            f"[INFO] After Hamming merge (threshold={threshold}): "
-            f"{len(structs)} structures"
-        )
 
-    # 4) Optional cap on number of structures
     if args.max_structures is not None and len(structs) > args.max_structures:
         structs = structs[: args.max_structures]
-        print(
-            f"[INFO] Truncated to max_structures={args.max_structures}: "
-            f"{len(structs)} structures"
-        )
 
-    converted = []
-    num_skipped = 0
-    for idx, s in enumerate(structs):
-        try:
-            converted.append(convert_to_rosetta_notation(s))
-        except ValueError as e:
-            # Log and skip any invalid structures (e.g., unbalanced parentheses)
-            sys.stderr.write(
-                f"[WARN] Skipping structure {idx} due to parsing error: {e}\n"
-            )
-            num_skipped += 1
-            continue
-
-    sys.stderr.write(
-        f"[INFO] Successfully converted {len(converted)} structures; "
-        f"skipped {num_skipped} invalid structures.\n"
-    )
-
-    # 6) Prune non-complementary base pairs using sequence from Stockholm
     sto_path = Path(args.sto)
     if not sto_path.is_file():
         raise FileNotFoundError(f"Stockholm file not found at {sto_path}")
 
-    print(f"[INFO] Reading ungapped sequence from Stockholm file: {sto_path}")
     seq = read_ungapped_seq_from_sto(sto_path, args.seq_name)
 
-    if len(seq) != L:
-        raise ValueError(
-            f"Sequence length from {sto_path} ({len(seq)}) does not match "
-            f"structure length ({L}). Make sure the alignment sequence "
-            "corresponds to these .db structures."
-        )
-
-    pruned: List[str] = []
-    total_removed = 0
-    for s in converted:
-        new_s, removed = prune_noncomplementary_pairs(s, seq)
-        pruned.append(new_s)
-        total_removed += removed
-
-    converted = pruned
-    if total_removed > 0:
-        print(
-            f"[INFO] Removed {total_removed} non-complementary base pairs "
-            "across all structures based on sequence from the Stockholm file"
-        )
-    else:
-        print("[INFO] No non-complementary base pairs detected.")
+    converted = []
+    for s in structs:
+        try:
+            rn = convert_to_rosetta_notation(s)
+            ps, _ = prune_noncomplementary_pairs(rn, seq)
+            converted.append(ps)
+        except ValueError as e:
+            sys.stderr.write(f"[WARN] Dropped invalid structure: {e}\n")
+            continue
 
     write_db_structures(db_out, converted, seq=seq)
     print(f"[INFO] Wrote {len(converted)} Rosetta-compatible structures to {db_out}")
@@ -636,4 +422,3 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
