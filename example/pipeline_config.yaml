@@ -11,7 +11,11 @@ sto: combined_1.cacofold.sto
 cov: combined_1.cacofold.cov
 sto: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.sto
 cov: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.cov
+<<<<<<< Updated upstream
 seq_name: "4GMA_1_Chain"   # sequence ID in the .sto file
+=======
+seq_name: "6VMY_1_Chain"   # sequence ID in the .sto file
+>>>>>>> Stashed changes
 
 
 #fold_exe: "/path/to/RNAstructure/exe/Fold"
@@ -28,6 +32,7 @@ sample:
   beta: 1
   seed: 0
   pk_alpha: 2
+<<<<<<< Updated upstream
 <<<<<<< HEAD
   pk_filter_frac: 0.025
   pk_filter_max_cross_per_pair: 4
@@ -53,17 +58,24 @@ sample:
 
   cov_mode: "logE"          # "off", "score", "power", ...
 >>>>>>> refs/remotes/origin/main
+=======
+  pk_filter_frac: 0.025
+  pk_filter_max_cross_per_pair: 10
+  pk_filter_max_total_cross: 10
+
+  cov_mode: "logE"          # "off", "score", "power", ...
+>>>>>>> Stashed changes
   cov_alpha: 3.0
-  cov_min_power: 1
-  cov_forbid_negative: True
-  cov_negative_E: 1
+  cov_min_power: 1.0
+  cov_forbid_negative: False
+  cov_negative_E: 1.0
 
 # --- Refinement of long unpaired regions (RNAstructure Fold / DuplexFold) ---
 refine:
   min_unpaired: 3               # internal '.' stretch length to trigger Fold
 #  min_terminal_unpaired: 4      # 5'/3' terminal '.' stretch for DuplexFold
   temperature: 310              # null => use RNAstructure default
-  allsub_abs: 0.1               # Max absolute free energy difference
+  allsub_abs: 1               # Max absolute free energy difference
   #allsub_pct: 100               # Max percent energy difference
   fold_extra_args: []            # e.g. ["-si", "SHAPE.dat"]
 
