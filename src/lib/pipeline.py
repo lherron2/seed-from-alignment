@@ -44,6 +44,7 @@ class RefineConfig:
     allsub_abs: Optional[float] = None
     allsub_pct: Optional[float] = None
     fold_extra_args: Sequence[str] = ()
+    max_structures: int = 1000  # Default limit for refined output
 
 
 @dataclass
@@ -262,11 +263,13 @@ def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
     abs_energy = cfg.refine.allsub_abs
     pct_energy = cfg.refine.allsub_pct
     extra_args = list(cfg.refine.fold_extra_args)
+    max_structures = cfg.refine.max_structures
 
     allsub_cache = {}
     duplex_cache = {}
 
-    refined_structs: List[str] = []
+    # rup.refine_structure returns List[Tuple[str, float]]
+    refined_structs_with_scores: List[Tuple[str, float]] = []
 
     for idx, s in enumerate(structs):
         variants = rup.refine_structure(
@@ -282,19 +285,34 @@ def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
             allsub_cache=allsub_cache,
             duplex_cache=duplex_cache
         )
-        refined_structs.extend(variants)
+        refined_structs_with_scores.extend(variants)
+
+    # Sort by score (ascending: lower energy/score is better)
+    refined_structs_with_scores.sort(key=lambda x: x[1])
+
+    # Deduplicate keeping best score (first encounter due to sort)
+    unique_refined = []
+    seen = set()
+    for rs, score in refined_structs_with_scores:
+        if rs not in seen:
+            unique_refined.append((rs, score))
+            seen.add(rs)
+
+    # Apply limit on UNIQUE structures
+    if max_structures > 0 and len(unique_refined) > max_structures:
+        sys.stderr.write(
+            f"[PIPELINE] Limiting output to top {max_structures} unique structures (found {len(unique_refined)}).\n"
+        )
+        unique_refined = unique_refined[:max_structures]
 
     db_out.parent.mkdir(parents=True, exist_ok=True)
-    seen = set()
     with db_out.open("w") as fh:
         fh.write(full_seq + "\n")
-        for rs in refined_structs:
-            if rs not in seen:
-                fh.write(rs + "\n")
-                seen.add(rs)
+        for rs, score in unique_refined:
+            fh.write(rs + "\n")
 
     sys.stderr.write(
-        f"[PIPELINE] Wrote {len(refined_structs)} refined structures to {db_out}\n"
+        f"[PIPELINE] Wrote {len(unique_refined)} refined structures to {db_out}\n"
     )
     return db_out
 

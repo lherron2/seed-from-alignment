@@ -1,45 +1,36 @@
+#!/usr/bin/env python3
 """
 Refine long unpaired regions in CaCoFold-sampled structures using an enumerative combinatorial approach.
 
 Refinement Tracks:
-    1. Independent Combinatorial Assembly (Enhanced for Kissing Loops):
-       - Input: Original unpaired regions (runs).
-       - Candidates: 
-            a) Local folding of run i (AllSub).
-            b) Interaction between run i and run j (DuplexFold).
-       - Kissing Loop Logic: When selecting an interaction (b), the algorithm now actively
-         looks for compatible local structures (a) that can exist simultaneously (disjoint indices),
-         allowing for stem-loops that also participate in tertiary contacts.
-       - Algorithm: Recursive backtracking to generate ALL valid assignments.
-       - PRIORITY: Interactions are explored BEFORE local folds to bias results toward
-         complex topologies (e.g. simultaneous PKs).
-<<<<<<< HEAD
-       - MERGING: Disjoint local structures for the same region are combined (e.g. Helix A + Helix B)
-         to ensure we don't miss composite structures if AllSub reports them separately.
-=======
-       - MERGING: Disjoint local structures for the same region are combined.
->>>>>>> refs/remotes/origin/main
+    0. Consensus Masking (New Layer):
+       - Before refinement begins, we generate variants of the input consensus structure.
+       - We identify all helices in the input.
+       - We generate scaffolds by masking (removing) these helices:
+            a) Sequential Masking: Remove 1 helix at a time (top N by length).
+            b) Pairwise Masking: Remove pairs of helices (top M by length).
+            c) End Masking Grid: Systematically unpair 5' and 3' ends in increments of 5nt
+               to force exploration of alternative terminal structures.
+       - This forces the pipeline to re-explore regions that were "locked" by the consensus,
+         allowing for alternative folds in those specific areas.
 
-    2. Sequential Hierarchical Assembly:
-       - Step A: Force all original regions to fold locally. Enumerate all combinations of AllSub structures.
-       - Step B: For each combination (Base Structure):
-            - Identify REMAINING unpaired segments (loops/bulges), min_len=4.
-            - Filter pairs of loops by linker length (>= 3nt).
-            - Run DuplexFold on valid pairs.
-<<<<<<< HEAD
-            - **NEW**: Run AllSub on loops to find missed local helices.
-=======
-            - Run AllSub on loops to find missed local helices.
->>>>>>> refs/remotes/origin/main
-            - Algorithm: Recursive backtracking to enumerate ALL valid sets of non-overlapping
-              loop-loop interactions AND loop local folds.
-       - Result: Base Structure + Selected Loop Interactions/Folds.
+    1. Terminal Initialization (Seed Mode):
+       - For every Masked Scaffold, we explicitly calculate 5' and 3' end interactions 
+         using dense, incremental windowing to identify potential global closing stems.
+       - Seeds include the Masked Scaffold + these new 5'-3' pairs.
+
+    2. Independent Combinatorial Assembly (Enhanced for Kissing Loops):
+       - Input: Unpaired regions in the (Masked + Seeded) scaffold.
+       - Candidates: Local AllSub vs. Interaction DuplexFold.
+       - Logic: Recursively explore compatible combinations.
+
+    3. Sequential Hierarchical Assembly:
+       - Hierarchical approach: Force local folds first, then interact loops.
 
     - Validation & Filtering:
-       - STRICT CANONICAL PAIR CHECK: All pairs must be WC or GU.
-       - ROSETTA FORMAT: Use () [] {} aA bB... to prevent a...a pairing errors.
-       - Remove isolated base pairs.
-       - Discard structures with > 2 layers of crossings (total layers > 3).
+       - STRICT CANONICAL PAIR CHECK.
+       - ROSETTA FORMAT.
+       - Topological complexity limits.
 """
 
 from __future__ import annotations
@@ -65,14 +56,25 @@ CANONICAL_PAIRS = {
     ("G", "C"), ("C", "G"),
     ("G", "U"), ("U", "G"),
 }
-UNPAIR_ENDS_LEN = 25       # Length of 5'/3' ends to force unpaired in that specific variant
-MAX_REGIONS_TO_REFINE = 50  # Safety cap: Only refine the N longest runs to prevent explosion
-<<<<<<< HEAD
-MAX_SOLUTIONS = 20000      # Increased to ensure coverage of complex topologies (Double PKs)
-=======
-MAX_SOLUTIONS = 20000      # Applied PER TRACK (so up to 2x this total before filtering)
->>>>>>> refs/remotes/origin/main
-MAX_SCAFFOLD_VARIANTS = 50 # Limit how many consensus masks we try
+
+# --- Masking Constants ---
+# Replaced static UNPAIR_ENDS_LEN with grid search constants
+END_MASK_STEP = 5           # Increment size for unpairing ends
+MAX_END_MASK_LEN = 45       # Max length to unpair from either end during grid search
+
+MAX_REGIONS_TO_REFINE = 20  # Safety cap: Only refine the N longest runs to prevent explosion
+MAX_SOLUTIONS = 2000      # Applied PER TRACK (so up to 2x this total before filtering)
+
+# Constraints for Masking to ensure numerical stability
+MAX_HELICES_SEQUENTIAL = 16 # Consider top N helices for single removal
+MAX_HELICES_PAIRWISE = 10   # Consider top N helices for pairwise removal (N*(N-1)/2 combos)
+MAX_SEEDS = 100              # Maximum number of 5'-3' initialization seeds to process per mask
+
+# Scoring Constants
+SCAFFOLD_PAIR_ENERGY = -1.5  # Estimated kcal/mol per scaffold base pair
+WEIGHT_L0 = 1.0              # Nested: Full stability
+WEIGHT_L1 = 0.6              # PK Layer 1: Reduced stability
+WEIGHT_L2_PLUS = -1.0        # PK Layer 2+: Penalty (flips sign of stability)
 
 # --- Graph Coloring for Layers (Local Definition for Safety) ---
 
@@ -96,15 +98,75 @@ def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]
             layers.append([p])
     return layers
 
+def calculate_weighted_score(
+    all_pairs: Set[Tuple[int, int]], 
+    refined_energy: float, 
+    scaffold_pairs: Set[Tuple[int, int]]
+) -> float:
+    """
+    Calculate a topology-aware weighted score.
+    
+    Formula:
+      Score = Sum( Weight(Layer(p)) * Energy(p) )
+      
+    Where:
+      - Energy(p) for refined pairs is (refined_energy / N_refined).
+      - Energy(p) for scaffold pairs is SCAFFOLD_PAIR_ENERGY.
+      - Weight depends on topological layer (0, 1, 2+).
+    """
+    if not all_pairs:
+        return 0.0
+
+    # 1. Determine global layers for ALL pairs together
+    sorted_pairs = sorted(list(all_pairs))
+    layers = pairs_to_layers(sorted_pairs)
+    
+    # Map pair -> layer index
+    pair_to_layer = {}
+    for idx, layer in enumerate(layers):
+        for p in layer:
+            pair_to_layer[p] = idx
+
+    # 2. Identify refined pairs
+    refined_pairs = all_pairs - scaffold_pairs
+    n_refined = len(refined_pairs)
+    
+    avg_refined_energy = 0.0
+    if n_refined > 0:
+        avg_refined_energy = refined_energy / n_refined
+
+    score = 0.0
+
+    # 3. Sum weighted energy for Refined Pairs
+    for p in refined_pairs:
+        layer = pair_to_layer.get(p, 0)
+        w = WEIGHT_L0
+        if layer == 1:
+            w = WEIGHT_L1
+        elif layer >= 2:
+            w = WEIGHT_L2_PLUS
+        
+        score += w * avg_refined_energy
+
+    # 4. Sum weighted energy for Scaffold Pairs
+    for p in scaffold_pairs:
+        # Only count if present in current structure (masking might have removed some)
+        if p in all_pairs:
+            layer = pair_to_layer.get(p, 0)
+            w = WEIGHT_L0
+            if layer == 1:
+                w = WEIGHT_L1
+            elif layer >= 2:
+                w = WEIGHT_L2_PLUS
+            
+            score += w * SCAFFOLD_PAIR_ENERGY
+
+    return score
+
 def pairs_to_rosetta_string(pairs: List[Tuple[int, int]], L: int) -> str:
     """
-    Convert pairs to a dot-bracket string using Rosetta-safe hierarchy:
-    Layer 0: ()
-    Layer 1: []
-    Layer 2: {}
-    Layer 3+: aA, bB ...
+    Convert pairs to a dot-bracket string using Rosetta-safe hierarchy.
     """
-    # Sanity check: Ensure pairs form a valid matching (no shared indices)
     indices = [idx for pair in pairs for idx in pair]
     if len(indices) != len(set(indices)):
         raise ValueError("Invalid matching: overlapping pairs detected in refined structure.")
@@ -113,7 +175,6 @@ def pairs_to_rosetta_string(pairs: List[Tuple[int, int]], L: int) -> str:
     layers = pairs_to_layers(pairs)
     
     brackets = [("(", ")"), ("[", "]"), ("{", "}")]
-    # Add a-z/A-Z for deeper layers
     for i in range(26):
         brackets.append((chr(ord('a')+i), chr(ord('A')+i)))
         
@@ -150,27 +211,20 @@ def remove_isolated_pairs(pairs: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
     while True:
         to_remove = set()
         for i, j in current_pairs:
-            # Check for stack: (i-1, j+1) or (i+1, j-1)
             p_down = (i - 1, j + 1)
             p_up = (i + 1, j - 1)
-            
-            # Helper to check existence regardless of order
             has_down = (p_down in current_pairs) or ((p_down[1], p_down[0]) in current_pairs)
             has_up = (p_up in current_pairs) or ((p_up[1], p_up[0]) in current_pairs)
-            
             if not (has_down or has_up):
                 to_remove.add((i, j))
-        
         if not to_remove:
             break
-        
         current_pairs -= to_remove
     return current_pairs
 
 # --- I/O ---
 
 def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
-    """Read the ungapped RNA sequence for ``seq_name`` from a Stockholm file."""
     sequences: Dict[str, List[str]] = {}
     with path.open() as fh:
         for raw in fh:
@@ -190,8 +244,7 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
         name = next(iter(sequences))
     else:
         if seq_name not in sequences:
-            available = ", ".join(sorted(sequences.keys()))
-            raise ValueError(f"Sequence '{seq_name}' not found. Available: {available}")
+            raise ValueError(f"Sequence '{seq_name}' not found.")
         name = seq_name
 
     aligned = "".join(sequences[name])
@@ -200,7 +253,6 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
 
 
 def read_fasta_sequence(path: Path, seq_name: str | None = None) -> str:
-    """Read the first (or named) sequence from FASTA/SEQ and normalise to RNA."""
     seqs: Dict[str, str] = {}
     current_name: str | None = None
     chunks: List[str] = []
@@ -236,10 +288,8 @@ def read_fasta_sequence(path: Path, seq_name: str | None = None) -> str:
 
 
 def read_db_structures(path: Path) -> List[str]:
-    """Read structures from a .db file."""
     structs: List[str] = []
     sequence: str | None = None
-
     with path.open() as fh:
         for line in fh:
             s = line.strip()
@@ -250,15 +300,12 @@ def read_db_structures(path: Path) -> List[str]:
                     sequence = s
                     continue
             structs.append(s)
-
     if not structs:
         raise ValueError(f"No structures found in {path}")
-    
     return structs
 
 
 def find_unpaired_runs(struct: str, min_len: int) -> List[Tuple[int, int]]:
-    """Find contiguous runs of '.' in the structure with length >= min_len."""
     runs: List[Tuple[int, int]] = []
     n = len(struct)
     i = 0
@@ -273,10 +320,33 @@ def find_unpaired_runs(struct: str, min_len: int) -> List[Tuple[int, int]]:
             i += 1
     return runs
 
+def parse_energy_from_header(header: str) -> float:
+    """Extract free energy from CT file header line (standard RNAstructure format)."""
+    # Example: "  30  -12.3  ENERGY = -12.3  seq_name"
+    # Sometimes: "  30  ENERGY = -12.3  seq_name"
+    # Or just "  30  seq_name" (no energy)
+    upper = header.upper()
+    if "ENERGY =" in upper:
+        try:
+            # "... ENERGY = -12.3 ..."
+            val_str = upper.split("ENERGY =")[1].strip().split()[0]
+            return float(val_str)
+        except (IndexError, ValueError):
+            pass
+            
+    # Fallback: try second token if it looks like a float
+    parts = header.split()
+    if len(parts) >= 2:
+        try:
+            return float(parts[1])
+        except ValueError:
+            pass
+            
+    return 0.0
 
-def parse_ct_file(ct_path: Path) -> List[str]:
-    """Parse an RNAstructure CT file containing one or more structures."""
-    structures: List[str] = []
+def parse_ct_file(ct_path: Path) -> List[Tuple[str, float]]:
+    """Parse CT file into (structure, energy) tuples."""
+    structures: List[Tuple[str, float]] = []
     try:
         with ct_path.open() as fh:
             lines = [ln.strip() for ln in fh if ln.strip()]
@@ -289,45 +359,33 @@ def parse_ct_file(ct_path: Path) -> List[str]:
     idx = 0
     while idx < len(lines):
         header = lines[idx]
+        energy = parse_energy_from_header(header)
         parts = header.split()
         if not parts:
             idx += 1
             continue
-            
         try:
             seq_len = int(parts[0])
         except ValueError:
             idx += 1
             continue
-            
         if idx + seq_len >= len(lines):
-            sys.stderr.write(f"[WARN] CT file truncated at structure header: {header}\n")
             break
-            
         db_chars = ["."] * seq_len
-        
         for offset in range(1, seq_len + 1):
             line = lines[idx + offset]
             fields = line.split()
-            if len(fields) < 5:
-                continue
+            if len(fields) < 5: continue
             try:
-                i = int(fields[0])
-                j = int(fields[4])
-            except ValueError:
-                continue
-            
-            i -= 1
-            j -= 1
-            
+                i = int(fields[0]) - 1
+                j = int(fields[4]) - 1
+            except ValueError: continue
             if j > i:
                 if 0 <= i < seq_len and 0 <= j < seq_len:
                     db_chars[i] = "("
                     db_chars[j] = ")"
-
-        structures.append("".join(db_chars))
+        structures.append(("".join(db_chars), energy))
         idx += (seq_len + 1)
-
     return structures
 
 
@@ -340,10 +398,8 @@ def call_rnastructure_allsub(
     absolute_energy: float | None = None,
     percent_energy: float | None = None,
     extra_args: Sequence[str] | None = None,
-) -> List[str]:
-    """Call RNAstructure AllSub to find suboptimal structures."""
+) -> List[Tuple[str, float]]:
     extra_args = list(extra_args) if extra_args is not None else []
-
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         seq_path = tmpdir_path / "subseq.fa"
@@ -364,19 +420,14 @@ def call_rnastructure_allsub(
 
         try:
             subprocess.run(cmd, check=True, text=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
-            sys.stderr.write(
-                f"[ERROR] RNAstructure AllSub failed (exit {e.returncode})\n"
-                f"Command: {' '.join(cmd)}\n{e.stderr}\n"
-            )
-            return ["." * len(subseq)]
+        except subprocess.CalledProcessError:
+            return [("." * len(subseq), 0.0)]
 
         if not ct_path.is_file():
-             return ["." * len(subseq)]
-
+             return [("." * len(subseq), 0.0)]
         structures = parse_ct_file(ct_path)
         if not structures:
-            return ["." * len(subseq)]
+            return [("." * len(subseq), 0.0)]
         return structures
 
 
@@ -386,16 +437,8 @@ def call_rnastructure_duplexfold(
     seq3: str,
     temperature: float | None = None,
     extra_args: Sequence[str] | None = None,
-) -> List[List[Tuple[int, int]]]:
-    """
-    Call RNAstructure DuplexFold on two sequences.
-    Returns list of pair sets. Pairs are (i_local_seq5, j_local_seq3) 1-based.
-    Includes bounds checking.
-    """
+) -> List[Tuple[List[Tuple[int, int]], float]]:
     extra_args = list(extra_args) if extra_args is not None else []
-
-    # Ensure exploration of suboptimals to catch transient interactions (like 5'-3' kisses)
-    # Only add -m 100 if user hasn't specified -m in extra_args (allows user control)
     if not any(arg.startswith("-m") for arg in extra_args):
          extra_args.extend(["-m", "100"])
 
@@ -419,22 +462,20 @@ def call_rnastructure_duplexfold(
 
         try:
             subprocess.run(cmd, check=True, text=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             return []
 
         structures = parse_ct_file(ct_path)
         if not structures:
             return []
 
-        # DuplexFold usually inserts a 3-nt linker (e.g. 'III') between sequences in the CT file.
-        # We detect this dynamically.
-        seq_len_ct = len(structures[0])
-        all_pair_sets = []
+        seq_len_ct = len(structures[0][0])
+        results = []
         n1 = len(seq5)
         n2 = len(seq3)
         linker_len = max(0, seq_len_ct - (n1 + n2))
         
-        for db in structures:
+        for (db, energy) in structures:
             pairs = []
             stack = []
             for i, ch in enumerate(db):
@@ -444,15 +485,13 @@ def call_rnastructure_duplexfold(
                     if stack:
                         j = stack.pop()
                         u, v = sorted((j, i)) 
-                        # u must be in seq5 (0..n1-1)
-                        # v must be in seq3 (n1+linker..end)
                         if u < n1 and v >= (n1 + linker_len):
                             i5_local = u + 1
                             j3_local = v - (n1 + linker_len) + 1
                             if i5_local <= n1 and j3_local <= n2:
                                 pairs.append((i5_local, j3_local))
-            all_pair_sets.append(pairs)
-        return all_pair_sets
+            results.append((pairs, energy))
+        return results
 
 
 def _pairs_from_struct(struct: str) -> Set[Tuple[int, int]]:
@@ -478,88 +517,273 @@ def get_loop_interaction_options(
     temperature, 
     extra_args, 
     duplex_cache, 
-    L
-) -> Dict[Tuple[int, int], List[Set[Tuple[int, int]]]]:
-    """Helper to compute pairwise DuplexFold options for a set of loops."""
+    L,
+    dense_window: bool = False
+) -> Dict[Tuple[int, int], List[Tuple[Set[Tuple[int, int]], float]]]:
     options = {}
+    
+    def get_len_steps(length: int) -> List[int]:
+        if dense_window:
+             return list(range(4, length + 1))
+        
+        if length <= 8:
+            return list(range(4, length + 1))
+        stride = 4 if length < 30 else 6
+        steps = list(range(4, length, stride))
+        steps.append(length)
+        return sorted(list(set(steps)))
+
     for r_idx_a in range(len(sub_runs)):
         for r_idx_b in range(r_idx_a + 1, len(sub_runs)):
             sa, ea = sub_runs[r_idx_a]
             sb, eb = sub_runs[r_idx_b]
             
-            # LINKER FILTER:
-            # Distance between end of A and start of B
             dist = sb - ea
             if dist < 3:
                 continue
-            
-            seq_a = full_seq[sa:ea]
-            seq_b = full_seq[sb:eb]
-            
-            dkey = (seq_a, seq_b, temperature, tuple(extra_args or []))
-            if dkey in duplex_cache:
-                d_res = duplex_cache[dkey]
-            else:
-                d_res = call_rnastructure_duplexfold(
-                    duplex_exe, seq_a, seq_b, temperature, extra_args
-                )
-                duplex_cache[dkey] = d_res
-            
-            if d_res:
-                valid_int_sets = []
-                for pair_list in d_res:
-                    if pair_list:
-                        g_pairs = set()
-                        for i_loc, j_loc in pair_list:
-                            gi = sa + i_loc - 1
-                            gj = sb + j_loc - 1
-                            if gi > gj: gi, gj = gj, gi
-                            # No strict bounds check needed here as derived from valid slices,
-                            # but filtering happens later.
-                            g_pairs.add((gi, gj))
-                        
-                        # Validate CANONICAL immediately
-                        canon_pairs = validate_and_filter_pairs(g_pairs, full_seq)
-                        if canon_pairs:
-                            valid_int_sets.append(canon_pairs)
 
-                if valid_int_sets:
-                    options[(r_idx_a, r_idx_b)] = valid_int_sets
+            len_a_total = ea - sa
+            len_b_total = eb - sb
+            if len_a_total < 4 or len_b_total < 4:
+                continue
+
+            steps_a = get_len_steps(len_a_total)
+            steps_b = get_len_steps(len_b_total)
+            
+            all_valid_int_sets = []
+            
+            for len_a in steps_a:
+                seq_a = full_seq[sa : sa + len_a]
+                for len_b in steps_b:
+                    seq_b = full_seq[eb - len_b : eb]
+            
+                    dkey = (seq_a, seq_b, temperature, tuple(extra_args or []))
+                    if dkey in duplex_cache:
+                        d_res = duplex_cache[dkey]
+                    else:
+                        d_res = call_rnastructure_duplexfold(
+                            duplex_exe, seq_a, seq_b, temperature, extra_args
+                        )
+                        duplex_cache[dkey] = d_res
+                    
+                    if d_res:
+                        for (pair_list, energy) in d_res:
+                            if pair_list:
+                                g_pairs = set()
+                                for i_loc, j_loc in pair_list:
+                                    gi = sa + i_loc - 1
+                                    gj = (eb - len_b) + j_loc - 1
+                                    if gi > gj: gi, gj = gj, gi
+                                    g_pairs.add((gi, gj))
+                                canon_pairs = validate_and_filter_pairs(g_pairs, full_seq)
+                                if canon_pairs:
+                                    all_valid_int_sets.append((canon_pairs, energy))
+
+            if all_valid_int_sets:
+                # Deduplicate based on pair set, keeping best energy
+                seen_sets = {}
+                for p_set, en in all_valid_int_sets:
+                    fs = frozenset(p_set)
+                    if fs not in seen_sets or en < seen_sets[fs][1]:
+                        seen_sets[fs] = (set(fs), en)
+                
+                options[(r_idx_a, r_idx_b)] = list(seen_sets.values())
     return options
 
-def merge_disjoint_options(option_sets: List[Set[Tuple[int, int]]], max_combo=50) -> List[Set[Tuple[int, int]]]:
-    """
-    If AllSub returns multiple suboptimal structures for a single region,
-    some might be disjoint (non-overlapping). We merge them here so we don't
-    miss the combination of 'Helix A' and 'Helix B' if AllSub only returned them separately.
-    """
+def merge_disjoint_options(
+    option_sets: List[Tuple[Set[Tuple[int, int]], float]], 
+    max_combo=50
+) -> List[Tuple[Set[Tuple[int, int]], float]]:
     combined = list(option_sets)
     n = len(option_sets)
-    # Simple N^2 pass to merge disjoint pairs
-    # Limit to top options to prevent explosion
     limit = min(n, 20)
-    
     new_combos = []
+    
+    # Store combined as (frozenset, energy) to check dupes
+    seen_combos = {frozenset(p): e for p, e in combined}
+    
     for i in range(limit):
         for j in range(i + 1, limit):
-            s1 = option_sets[i]
-            s2 = option_sets[j]
-            
-            # Check overlap
-            # Indices involved
+            s1, e1 = option_sets[i]
+            s2, e2 = option_sets[j]
             idx1 = {x for p in s1 for x in p}
             idx2 = {x for p in s2 for x in p}
-            
             if idx1.isdisjoint(idx2):
                 union_set = s1.union(s2)
-                # Check if this union is already in the list
-                if union_set not in combined and union_set not in new_combos:
-                    new_combos.append(union_set)
+                union_energy = e1 + e2
+                fs = frozenset(union_set)
+                
+                if fs not in seen_combos or union_energy < seen_combos[fs]:
+                    seen_combos[fs] = union_energy
+                    new_combos.append((union_set, union_energy))
                     if len(new_combos) >= max_combo: break
         if len(new_combos) >= max_combo: break
     
+    # Convert back to list format
+    # Note: we don't strictly enforce uniqueness here, but it helps
     combined.extend(new_combos)
     return combined
+
+def get_5p3p_seeds(
+    scaffold_pairs: Set[Tuple[int, int]],
+    full_seq: str,
+    duplex_exe: Path,
+    temperature: float | None,
+    extra_args: Sequence[str] | None,
+    duplex_cache: Dict,
+    L: int
+) -> List[Tuple[Set[Tuple[int, int]], float]]:
+    """Explicitly find 5'-3' interaction candidates to seed the refinement."""
+    paired_mask = [False] * L
+    for i, j in scaffold_pairs:
+        if 0 <= i < L: paired_mask[i] = True
+        if 0 <= j < L: paired_mask[j] = True
+        
+    start_5p = 0
+    end_5p = 0
+    while end_5p < L and not paired_mask[end_5p]:
+        end_5p += 1
+    
+    start_3p = L
+    end_3p = L
+    while start_3p > 0 and not paired_mask[start_3p - 1]:
+        start_3p -= 1
+        
+    # Overlap/Intersection Logic
+    if end_5p >= start_3p:
+        # Overlapping regions. Bisect into two domains with a 3nt gap for the linker constraint.
+        total_range_len = end_3p - start_5p
+        if total_range_len < 10: 
+             return []
+        
+        mid = start_5p + (total_range_len // 2)
+        new_end_5p = mid - 1
+        new_start_3p = mid + 2
+        
+        if (new_end_5p - start_5p) < 4 or (end_3p - new_start_3p) < 4:
+            return []
+            
+        term_runs = [(start_5p, new_end_5p), (new_start_3p, end_3p)]
+
+    elif (end_5p - start_5p) < 3 or (end_3p - start_3p) < 3:
+        return []
+    else:
+        term_runs = [(start_5p, end_5p), (start_3p, end_3p)]
+    
+    opts_map = get_loop_interaction_options(
+        term_runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L,
+        dense_window=True
+    )
+    
+    seeds = []
+    if (0, 1) in opts_map:
+        candidates = opts_map[(0, 1)]
+        scaffold_indices = {x for p in scaffold_pairs for x in p}
+        for (cand, energy) in candidates:
+            cand_indices = {x for p in cand for x in p}
+            if cand_indices.isdisjoint(scaffold_indices):
+                seeds.append((cand, energy))
+                
+    seeds.sort(key=lambda x: len(x[0]), reverse=True)
+    return seeds[:MAX_SEEDS]
+
+# --- Consensus Masking Logic ---
+
+def identify_helices(pairs: Set[Tuple[int, int]]) -> List[Set[Tuple[int, int]]]:
+    """Group pairs into contiguous helices (stems)."""
+    sorted_pairs = sorted(list(pairs), key=lambda x: x[0])
+    helices = []
+    
+    if not sorted_pairs:
+        return []
+
+    current_helix = {sorted_pairs[0]}
+    
+    for k in range(1, len(sorted_pairs)):
+        prev = sorted_pairs[k-1]
+        curr = sorted_pairs[k]
+        
+        # Check for stacking: (i, j) stacks on (i-1, j+1)
+        if curr[0] == prev[0] + 1 and curr[1] == prev[1] - 1:
+            current_helix.add(curr)
+        else:
+            helices.append(current_helix)
+            current_helix = {curr}
+    
+    if current_helix:
+        helices.append(current_helix)
+        
+    return helices
+
+def generate_masked_scaffolds(initial_pairs: Set[Tuple[int, int]], seq_len: int) -> List[Set[Tuple[int, int]]]:
+    """
+    Generate variants of the scaffold by systematically removing helices.
+    Includes:
+      1. Original scaffold.
+      2. Scaffolds with 1 helix removed (Sequential).
+      3. Scaffolds with 2 helices removed (Pairwise).
+      4. End Masking Grid: Grid search removing 5' and 3' ends in steps.
+    """
+    variants = [initial_pairs]
+    
+    helices = identify_helices(initial_pairs)
+    # Sort helices by length (descending) to target main structural elements
+    helices.sort(key=len, reverse=True)
+    
+    # 1. Sequential Masking (Top N)
+    limit_seq = min(len(helices), MAX_HELICES_SEQUENTIAL)
+    for i in range(limit_seq):
+        h = helices[i]
+        # Create new scaffold without this helix
+        new_scaffold = initial_pairs - h
+        if new_scaffold not in variants:
+            variants.append(new_scaffold)
+            
+    # 2. Pairwise Masking (Top M)
+    limit_pair = min(len(helices), MAX_HELICES_PAIRWISE)
+    for i in range(limit_pair):
+        for j in range(i + 1, limit_pair):
+            h1 = helices[i]
+            h2 = helices[j]
+            new_scaffold = initial_pairs - h1 - h2
+            if new_scaffold not in variants:
+                variants.append(new_scaffold)
+    
+    # 3. End Masking Grid Search
+    # Incrementally unpair 5' and 3' ends to force exploration of terminal structures
+    # Loop 0, 5, 10, ... MAX_END_MASK_LEN
+    end_steps_5 = list(range(0, MAX_END_MASK_LEN + 1, END_MASK_STEP))
+    end_steps_3 = list(range(0, MAX_END_MASK_LEN + 1, END_MASK_STEP))
+
+    for len_5 in end_steps_5:
+        for len_3 in end_steps_3:
+            if len_5 == 0 and len_3 == 0:
+                continue
+
+            # Safety check: don't unpair the whole molecule
+            if (len_5 + len_3) >= seq_len:
+                continue
+
+            end_masked_scaffold = set()
+            for i, j in initial_pairs:
+                # Keep pair only if both bases are outside the mask windows
+                # i and j are 0-indexed. 
+                # 5' mask removes 0 to len_5-1.
+                # 3' mask removes (L - len_3) to L-1.
+                cutoff_3 = seq_len - len_3
+                
+                in_5_region = (i < len_5) or (j < len_5)
+                in_3_region = (i >= cutoff_3) or (j >= cutoff_3)
+                
+                if not in_5_region and not in_3_region:
+                    end_masked_scaffold.add((i, j))
+            
+            if end_masked_scaffold not in variants:
+                variants.append(end_masked_scaffold)
+                
+    return variants
+
+# --- Main Refinement Logic ---
 
 def _refine_structure_impl(
     struct: str,
@@ -573,11 +797,7 @@ def _refine_structure_impl(
     extra_args: Sequence[str] | None = None,
     allsub_cache: Dict = None,
     duplex_cache: Dict = None,
-) -> List[str]:
-    """
-    Refine structure using two distinct tracks with heuristic filters.
-    Core implementation.
-    """
+) -> List[Tuple[str, float]]:
     L = len(full_seq)
     if len(struct) != L:
         raise ValueError("Structure/Sequence length mismatch")
@@ -585,523 +805,268 @@ def _refine_structure_impl(
     if allsub_cache is None: allsub_cache = {}
     if duplex_cache is None: duplex_cache = {}
 
-    runs = find_unpaired_runs(struct, min_unpaired_len)
-    
-    # --- HEURISTIC: Limit to top N largest runs ---
-    # Combinatorial complexity is exponential in len(runs).
-    # If we have too many, sort by length and keep only the largest ones.
-    if len(runs) > MAX_REGIONS_TO_REFINE:
-        # Sort by length (descending)
-        sorted_runs = sorted(runs, key=lambda r: (r[1] - r[0]), reverse=True)
-        # Keep top N
-        runs = sorted_runs[:MAX_REGIONS_TO_REFINE]
-        # Re-sort by position to ensure logic flows left-to-right
-        runs.sort(key=lambda r: r[0])
-    
-    # 1. Parse and SANITIZE the scaffold. 
+    # 1. Parse and SANITIZE the initial input scaffold. 
     raw_scaffold = _pairs_from_struct(struct)
-    scaffold_pairs = validate_and_filter_pairs(raw_scaffold, full_seq)
+    initial_scaffold = validate_and_filter_pairs(raw_scaffold, full_seq)
 
-    if not runs:
-        # Just return sanitized scaffold
-        return [pairs_to_rosetta_string(list(scaffold_pairs), L)]
-
-    # --- Pre-computation for LOCAL Options (Original Runs) ---
-    local_options: Dict[int, List[Set[Tuple[int, int]]]] = {}
+    # 2. GENERATE MASKED VARIANTS
+    #    Create alternative consensus baselines by removing helices.
+    masked_scaffolds = generate_masked_scaffolds(initial_scaffold, L)
+    sys.stderr.write(f"[REFINE] Generated {len(masked_scaffolds)} masked variants for structure.\n")
     
-    for idx, (start, end) in enumerate(runs):
-        subseq = full_seq[start:end]
-        key = (subseq, temperature, absolute_energy, percent_energy, tuple(extra_args or []))
-        
-        if key in allsub_cache:
-            sub_structs = allsub_cache[key]
-        else:
-            sub_structs = call_rnastructure_allsub(
-                allsub_exe, subseq, temperature, absolute_energy, percent_energy, extra_args
-            )
-            allsub_cache[key] = sub_structs
-        
-        option_sets = []
-        for s_str in sub_structs:
-            # Parse pairs from AllSub
-            p_sub = _struct_string_to_pairs(s_str, offset=start)
-            # Filter non-canonical
-            p_clean = validate_and_filter_pairs(p_sub, full_seq)
-            option_sets.append(p_clean)
-        
-        # Ensure at least one option (empty set)
-        if not option_sets: option_sets = [set()]
-        
-        # MERGE DISJOINT OPTIONS: If "Helix A" and "Helix B" appear separately, combine them.
-        option_sets = merge_disjoint_options(option_sets)
-        
-        local_options[idx] = option_sets
+    final_unique_structs: List[Tuple[str, float]] = []
+    seen_global: Dict[str, float] = {}
 
-    # --- Pre-computation for INTERACTION Options (Original Runs) ---
-    interaction_options: Dict[Tuple[int, int], List[Set[Tuple[int, int]]]] = {}
+    # Iterate over every Masked Variant (Consensus perturbation)
+    for mask_idx, base_scaffold in enumerate(masked_scaffolds):
+        sys.stderr.write(f"[REFINE] Processing Mask {mask_idx+1}/{len(masked_scaffolds)} (Pairs: {len(base_scaffold)})...\n")
 
-    if len(runs) >= 2:
-        interaction_options = get_loop_interaction_options(
-            runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
+        # 3. GENERATE SEED SCAFFOLDS (Initialization) for THIS mask
+        #    Explicitly calculate 5'-3' interactions.
+        
+        # Tuple: (scaffold_set, added_energy)
+        # Base scaffold has 0.0 refined energy
+        scaffolds_to_process = [(base_scaffold, 0.0)]
+        seed_interactions = get_5p3p_seeds(
+            base_scaffold, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
         )
-
-<<<<<<< HEAD
-    final_pair_sets: List[Set[Tuple[int, int]]] = []
-=======
-    # Separate Lists for Tracks
-    track1_results: List[Set[Tuple[int, int]]] = []
-    track2_results: List[Set[Tuple[int, int]]] = []
->>>>>>> refs/remotes/origin/main
-
-    # =========================================================================
-    # TRACK 1: Enumerative Combinatorial (Independent)
-    # =========================================================================
-    num_regions = len(runs)
-    
-    def _backtrack_track1(idx: int, covered: Set[int], current_pairs: Set[Tuple[int, int]]):
-<<<<<<< HEAD
-        if len(final_pair_sets) >= MAX_SOLUTIONS:
-            return
-
-        if idx >= num_regions:
-            final_pair_sets.append(current_pairs)
-=======
-        if len(track1_results) >= MAX_SOLUTIONS:
-            return
-
-        if idx >= num_regions:
-            track1_results.append(current_pairs)
->>>>>>> refs/remotes/origin/main
-            return
-
-        if idx in covered:
-            _backtrack_track1(idx + 1, covered, current_pairs)
-            return
-
-        # STRATEGY CHANGE: Prioritize Interactions over Local Folds.
-<<<<<<< HEAD
-        # This helps the depth-first search find multi-interaction topologies (like double PKs)
-        # before the solution buffer fills up with simple local-only variants.
-
-=======
->>>>>>> refs/remotes/origin/main
-        # Choice A: Interaction with future region k (Hybrid: Kiss + Compatible Local)
-        for k in range(idx + 1, num_regions):
-            if k in covered: continue
-            
-            opts = interaction_options.get((idx, k))
-            if opts:
-                new_covered_int = covered.copy()
-                new_covered_int.add(idx)
-                new_covered_int.add(k)
-                for int_set in opts:
-<<<<<<< HEAD
-                    if len(final_pair_sets) >= MAX_SOLUTIONS: return
-=======
-                    if len(track1_results) >= MAX_SOLUTIONS: return
->>>>>>> refs/remotes/origin/main
-                    
-                    # KISSING LOOP ENHANCEMENT (Hybrid Logic)
-                    used_indices = {x for p in int_set for x in p}
-                    
-                    # Find compatible local options for idx
-                    compatible_idx = []
-                    for l_set in local_options[idx]:
-                        l_indices = {x for p in l_set for x in p}
-                        if l_indices.isdisjoint(used_indices):
-                            compatible_idx.append(l_set)
-                    if not compatible_idx: compatible_idx = [set()]
-                    
-                    # Find compatible local options for k
-                    compatible_k = []
-                    for l_set in local_options[k]:
-                        l_indices = {x for p in l_set for x in p}
-                        if l_indices.isdisjoint(used_indices):
-                            compatible_k.append(l_set)
-                    if not compatible_k: compatible_k = [set()]
-
-                    # Iterate combinations
-                    for c_i in compatible_idx:
-                        for c_k in compatible_k:
-<<<<<<< HEAD
-                            if len(final_pair_sets) >= MAX_SOLUTIONS: return
-=======
-                            if len(track1_results) >= MAX_SOLUTIONS: return
->>>>>>> refs/remotes/origin/main
-                            
-                            combined_set = int_set.union(c_i).union(c_k)
-                            _backtrack_track1(idx + 1, new_covered_int, current_pairs.union(combined_set))
-
-        # Choice B: Local Fold (or empty if local_options has empty set)
-        new_covered_local = covered.copy()
-        new_covered_local.add(idx)
-        for loc_set in local_options[idx]:
-<<<<<<< HEAD
-            if len(final_pair_sets) >= MAX_SOLUTIONS: return
-=======
-            if len(track1_results) >= MAX_SOLUTIONS: return
->>>>>>> refs/remotes/origin/main
-            _backtrack_track1(idx + 1, new_covered_local, current_pairs.union(loc_set))
-
-    _backtrack_track1(0, set(), scaffold_pairs)
-
-    # =========================================================================
-    # TRACK 2: Enumerative Sequential (Hierarchical)
-    # =========================================================================
-    
-    # 1. Generate all combinations of strictly local folds
-    all_local_lists = [local_options[i] for i in range(num_regions)]
-    
-    for local_combo in itertools.product(*all_local_lists):
-<<<<<<< HEAD
-        if len(final_pair_sets) >= MAX_SOLUTIONS: break
-=======
-        if len(track2_results) >= MAX_SOLUTIONS: break
->>>>>>> refs/remotes/origin/main
-
-        base_set = scaffold_pairs.copy()
-        for p_set in local_combo:
-            base_set.update(p_set)
+        sys.stderr.write(f"[REFINE]   Generated {len(seed_interactions)} end-to-end seeds for Mask {mask_idx+1}.\n")
         
-        # 2. Identify remaining unpaired regions (LOOPS)
-        paired_mask = [False] * L
-        for i, j in base_set:
-            if 0 <= i < L: paired_mask[i] = True
-            if 0 <= j < L: paired_mask[j] = True
-            
-        sub_runs = []
-        i = 0
-        while i < L:
-            if not paired_mask[i]:
-                start_i = i
-                while i < L and not paired_mask[i]:
-                    i += 1
-                # Use min_len=4 per request
-                if (i - start_i) >= 3:
-                    sub_runs.append((start_i, i))
-            else:
-                i += 1
+        for (seed, energy) in seed_interactions:
+            new_scaffold = base_scaffold.union(seed)
+            scaffolds_to_process.append((new_scaffold, energy))
         
-        # Limit sub-runs here as well for safety
-        if len(sub_runs) > MAX_REGIONS_TO_REFINE:
-             sorted_sub = sorted(sub_runs, key=lambda r: (r[1] - r[0]), reverse=True)
-             sub_runs = sorted_sub[:MAX_REGIONS_TO_REFINE]
-             sub_runs.sort(key=lambda r: r[0])
-
-        if len(sub_runs) < 2:
-<<<<<<< HEAD
-            final_pair_sets.append(base_set)
-=======
-            track2_results.append(base_set)
->>>>>>> refs/remotes/origin/main
-            continue
-
-        # PRECOMPUTE OPTIONS FOR LOOPS: Interaction AND Local
-        # A. Interaction (DuplexFold)
-        loop_int_options = get_loop_interaction_options(
-            sub_runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
-        )
-        
-        # B. Local Fold (AllSub) - Recalculate for these specific loop sequences
-        loop_local_options = {}
-        for l_idx, (start, end) in enumerate(sub_runs):
-            subseq = full_seq[start:end]
-            key = (subseq, temperature, absolute_energy, percent_energy, tuple(extra_args or []))
+        # 4. Process each Seeded Scaffold independently
+        for seed_idx, (current_scaffold, base_energy) in enumerate(scaffolds_to_process):
             
-            if key in allsub_cache:
-                sub_structs = allsub_cache[key]
-            else:
-                sub_structs = call_rnastructure_allsub(
-                    allsub_exe, subseq, temperature, absolute_energy, percent_energy, extra_args
-                )
-                allsub_cache[key] = sub_structs
+            # Recalculate runs based on the current scaffold
+            current_struct_str = pairs_to_rosetta_string(list(current_scaffold), L)
+            runs = find_unpaired_runs(current_struct_str, min_unpaired_len)
             
-            l_opt_sets = []
-            for s_str in sub_structs:
-                p_sub = _struct_string_to_pairs(s_str, offset=start)
-                p_clean = validate_and_filter_pairs(p_sub, full_seq)
-                l_opt_sets.append(p_clean)
-            if not l_opt_sets: l_opt_sets = [set()]
-            loop_local_options[l_idx] = l_opt_sets
-
-        num_loops = len(sub_runs)
-        
-        def _backtrack_track2_loops(l_idx: int, l_covered: Set[int], l_pairs: Set[Tuple[int, int]]):
-<<<<<<< HEAD
-            if len(final_pair_sets) >= MAX_SOLUTIONS: return
-
-            if l_idx >= num_loops:
-                final_pair_sets.append(l_pairs)
-=======
-            if len(track2_results) >= MAX_SOLUTIONS: return
-
-            if l_idx >= num_loops:
-                track2_results.append(l_pairs)
->>>>>>> refs/remotes/origin/main
-                return
+            # --- HEURISTIC: Limit to top N largest runs ---
+            if len(runs) > MAX_REGIONS_TO_REFINE:
+                sorted_runs = sorted(runs, key=lambda r: (r[1] - r[0]), reverse=True)
+                runs = sorted_runs[:MAX_REGIONS_TO_REFINE]
+                runs.sort(key=lambda r: r[0])
             
-            if l_idx in l_covered:
-                _backtrack_track2_loops(l_idx + 1, l_covered, l_pairs)
-                return
-            
-            # Choice A: Loop interacts with future loop k
-            for k in range(l_idx + 1, num_loops):
-                if k in l_covered: continue
+            sys.stderr.write(f"[REFINE]     Mask {mask_idx+1}, Seed {seed_idx+1}: Runs to refine = {len(runs)}\n")
                 
-                opts = loop_int_options.get((l_idx, k))
-                if opts:
-                    new_cov_pair = l_covered.copy()
-                    new_cov_pair.add(l_idx)
-                    new_cov_pair.add(k)
-                    for int_set in opts:
-<<<<<<< HEAD
-                        if len(final_pair_sets) >= MAX_SOLUTIONS: return
-=======
+            if not runs:
+                s_str = pairs_to_rosetta_string(list(current_scaffold), L)
+                
+                # Apply new scoring logic
+                s_adj_score = calculate_weighted_score(
+                    all_pairs=current_scaffold,
+                    refined_energy=base_energy,
+                    scaffold_pairs=base_scaffold
+                )
+                
+                if s_str not in seen_global or s_adj_score < seen_global[s_str]:
+                    seen_global[s_str] = s_adj_score
+                    final_unique_structs.append((s_str, s_adj_score))
+                continue
+
+            # --- Pre-computation for LOCAL Options ---
+            local_options: Dict[int, List[Tuple[Set[Tuple[int, int]], float]]] = {}
+            for idx, (start, end) in enumerate(runs):
+                subseq = full_seq[start:end]
+                key = (subseq, temperature, absolute_energy, percent_energy, tuple(extra_args or []))
+                
+                if key in allsub_cache:
+                    sub_structs = allsub_cache[key]
+                else:
+                    sub_structs = call_rnastructure_allsub(
+                        allsub_exe, subseq, temperature, absolute_energy, percent_energy, extra_args
+                    )
+                    allsub_cache[key] = sub_structs
+                
+                option_sets = []
+                for (s_str, energy) in sub_structs:
+                    p_sub = _struct_string_to_pairs(s_str, offset=start)
+                    p_clean = validate_and_filter_pairs(p_sub, full_seq)
+                    option_sets.append((p_clean, energy))
+                
+                if not option_sets: option_sets = [(set(), 0.0)]
+                option_sets = merge_disjoint_options(option_sets)
+                local_options[idx] = option_sets
+
+            # --- Pre-computation for INTERACTION Options ---
+            interaction_options: Dict[Tuple[int, int], List[Tuple[Set[Tuple[int, int]], float]]] = {}
+            if len(runs) >= 2:
+                interaction_options = get_loop_interaction_options(
+                    runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
+                )
+
+            # (pair_set, current_score)
+            track1_results: List[Tuple[Set[Tuple[int, int]], float]] = []
+            track2_results: List[Tuple[Set[Tuple[int, int]], float]] = []
+
+            # TRACK 1: Enumerative Combinatorial
+            sys.stderr.write(f"[REFINE]     Mask {mask_idx+1}, Seed {seed_idx+1}: Starting Track 1 (Combinatorial)...\n")
+            num_regions = len(runs)
+            def _backtrack_track1(idx: int, covered: Set[int], current_pairs: Set[Tuple[int, int]], current_score: float):
+                if len(track1_results) >= MAX_SOLUTIONS: return
+                if idx >= num_regions:
+                    track1_results.append((current_pairs, current_score))
+                    return
+                if idx in covered:
+                    _backtrack_track1(idx + 1, covered, current_pairs, current_score)
+                    return
+
+                # Interaction
+                for k in range(idx + 1, num_regions):
+                    if k in covered: continue
+                    opts = interaction_options.get((idx, k))
+                    if opts:
+                        new_covered_int = covered.copy()
+                        new_covered_int.add(idx)
+                        new_covered_int.add(k)
+                        for (int_set, int_energy) in opts:
+                            if len(track1_results) >= MAX_SOLUTIONS: return
+                            used_indices = {x for p in int_set for x in p}
+                            
+                            # Compatible local
+                            compatible_idx = [l for l in local_options[idx] if {x for p in l[0] for x in p}.isdisjoint(used_indices)] or [(set(), 0.0)]
+                            compatible_k = [l for l in local_options[k] if {x for p in l[0] for x in p}.isdisjoint(used_indices)] or [(set(), 0.0)]
+
+                            for (c_i, e_i) in compatible_idx:
+                                for (c_k, e_k) in compatible_k:
+                                    if len(track1_results) >= MAX_SOLUTIONS: return
+                                    combined_set = int_set.union(c_i).union(c_k)
+                                    _backtrack_track1(idx + 1, new_covered_int, current_pairs.union(combined_set), current_score + int_energy + e_i + e_k)
+
+                # Local
+                new_covered_local = covered.copy()
+                new_covered_local.add(idx)
+                for (loc_set, loc_energy) in local_options[idx]:
+                    if len(track1_results) >= MAX_SOLUTIONS: return
+                    _backtrack_track1(idx + 1, new_covered_local, current_pairs.union(loc_set), current_score + loc_energy)
+
+            _backtrack_track1(0, set(), current_scaffold, base_energy)
+            sys.stderr.write(f"[REFINE]     Mask {mask_idx+1}, Seed {seed_idx+1}: Finished Track 1. Found {len(track1_results)} solutions.\n")
+
+            # TRACK 2: Enumerative Sequential
+            sys.stderr.write(f"[REFINE]     Mask {mask_idx+1}, Seed {seed_idx+1}: Starting Track 2 (Sequential)...\n")
+            all_local_lists = [local_options[i] for i in range(num_regions)]
+            
+            # Using Cartesian product
+            for local_combo in itertools.product(*all_local_lists):
+                if len(track2_results) >= MAX_SOLUTIONS: break
+                
+                # Unpack (set, energy) tuples
+                base_set = current_scaffold.copy()
+                base_score = base_energy
+                for (p_set, en) in local_combo: 
+                    base_set.update(p_set)
+                    base_score += en
+                
+                paired_mask = [False] * L
+                for i, j in base_set:
+                    if 0 <= i < L: paired_mask[i] = True
+                    if 0 <= j < L: paired_mask[j] = True
+                    
+                sub_runs = []
+                i = 0
+                while i < L:
+                    if not paired_mask[i]:
+                        start_i = i
+                        while i < L and not paired_mask[i]: i += 1
+                        if (i - start_i) >= 3: sub_runs.append((start_i, i))
+                    else: i += 1
+                
+                if len(sub_runs) > MAX_REGIONS_TO_REFINE:
+                     sorted_sub = sorted(sub_runs, key=lambda r: (r[1] - r[0]), reverse=True)
+                     sub_runs = sorted_sub[:MAX_REGIONS_TO_REFINE]
+                     sub_runs.sort(key=lambda r: r[0])
+
+                if len(sub_runs) < 2:
+                    track2_results.append((base_set, base_score))
+                    continue
+
+                loop_int_options = get_loop_interaction_options(
+                    sub_runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
+                )
+                loop_local_options = {}
+                for l_idx, (start, end) in enumerate(sub_runs):
+                    subseq = full_seq[start:end]
+                    key = (subseq, temperature, absolute_energy, percent_energy, tuple(extra_args or []))
+                    if key in allsub_cache: sub_structs = allsub_cache[key]
+                    else:
+                        sub_structs = call_rnastructure_allsub(
+                            allsub_exe, subseq, temperature, absolute_energy, percent_energy, extra_args
+                        )
+                        allsub_cache[key] = sub_structs
+                    l_opt_sets = []
+                    for (s_str, energy) in sub_structs:
+                        p_sub = _struct_string_to_pairs(s_str, offset=start)
+                        p_clean = validate_and_filter_pairs(p_sub, full_seq)
+                        l_opt_sets.append((p_clean, energy))
+                    if not l_opt_sets: l_opt_sets = [(set(), 0.0)]
+                    loop_local_options[l_idx] = l_opt_sets
+
+                num_loops = len(sub_runs)
+                def _backtrack_track2_loops(l_idx: int, l_covered: Set[int], l_pairs: Set[Tuple[int, int]], l_score: float):
+                    if len(track2_results) >= MAX_SOLUTIONS: return
+                    if l_idx >= num_loops:
+                        track2_results.append((l_pairs, l_score))
+                        return
+                    if l_idx in l_covered:
+                        _backtrack_track2_loops(l_idx + 1, l_covered, l_pairs, l_score)
+                        return
+                    
+                    for k in range(l_idx + 1, num_loops):
+                        if k in l_covered: continue
+                        opts = loop_int_options.get((l_idx, k))
+                        if opts:
+                            new_cov_pair = l_covered.copy()
+                            new_cov_pair.add(l_idx)
+                            new_cov_pair.add(k)
+                            for (int_set, int_en) in opts:
+                                if len(track2_results) >= MAX_SOLUTIONS: return
+                                _backtrack_track2_loops(l_idx + 1, new_cov_pair, l_pairs.union(int_set), l_score + int_en)
+
+                    new_cov_local = l_covered.copy()
+                    new_cov_local.add(l_idx)
+                    for (l_set, l_en) in loop_local_options[l_idx]:
                         if len(track2_results) >= MAX_SOLUTIONS: return
->>>>>>> refs/remotes/origin/main
-                        _backtrack_track2_loops(l_idx + 1, new_cov_pair, l_pairs.union(int_set))
-
-            # Choice B: Loop folds locally (New Feature!)
-            new_cov_local = l_covered.copy()
-            new_cov_local.add(l_idx)
-            for l_set in loop_local_options[l_idx]:
-<<<<<<< HEAD
-                if len(final_pair_sets) >= MAX_SOLUTIONS: return
-=======
-                if len(track2_results) >= MAX_SOLUTIONS: return
->>>>>>> refs/remotes/origin/main
-                _backtrack_track2_loops(l_idx + 1, new_cov_local, l_pairs.union(l_set))
-
-            # Choice C: Loop remains unpaired (Implicitly covered if local_options includes empty set, but ensures safety)
-            # Actually, we should only do this if we haven't exhausted options, or if local options are non-empty but we want to skip.
-            # Just to be safe and thorough:
-            # _backtrack_track2_loops(l_idx + 1, new_cov_local, l_pairs) 
-            # (Skipped because local_options usually includes empty set or we rely on loop_local_options)
-        
-        _backtrack_track2_loops(0, set(), base_set)
-
-    # =========================================================================
-    # Final Output Generation & Filtering
-    # =========================================================================
-<<<<<<< HEAD
-=======
-    
-    # Merge both tracks
-    final_pair_sets = track1_results + track2_results
-
->>>>>>> refs/remotes/origin/main
-    unique_structs = []
-    seen = set()
-
-    for p_set in final_pair_sets:
-        # 1. Filter: Remove Isolated Pairs
-        cleaned_set = remove_isolated_pairs(p_set)
-        
-        # Check for conflicts
-        flattened = []
-        valid_struct = True
-        for (i, j) in cleaned_set:
-            if i < 0 or i >= L or j < 0 or j >= L:
-                valid_struct = False; break
-            flattened.append(i)
-            flattened.append(j)
-        if not valid_struct: continue
-        if len(flattened) != len(set(flattened)): continue 
-
-        # 2. Filter: Topological Complexity
-        # Discard if total layers > 3 (1 nested + 2 crossing)
-        layers = pairs_to_layers(list(cleaned_set))
-        if len(layers) > 3:
-            continue
-        
-        # Generate Rosetta-safe string (using [], {} before aA)
-        pk_str = pairs_to_rosetta_string(sorted(list(cleaned_set)), L)
-        
-        if pk_str not in seen:
-            seen.add(pk_str)
-            unique_structs.append(pk_str)
-
-    return unique_structs
-
-
-def get_helical_stacks(pairs: Set[Tuple[int, int]]) -> List[Set[Tuple[int, int]]]:
-    """
-    Group pairs into continuous helical stacks.
-    A pair (i, j) is connected to (i+1, j-1) in the same stack.
-    """
-    sorted_pairs = sorted(list(pairs))
-    stacks = []
-    visited = set()
-    
-    for p in sorted_pairs:
-        if p in visited:
-            continue
-        
-        current_stack = {p}
-        visited.add(p)
-        
-        # Expand inwards: (i+1, j-1)
-        curr = p
-        while True:
-            next_p = (curr[0] + 1, curr[1] - 1)
-            if next_p in pairs:
-                current_stack.add(next_p)
-                visited.add(next_p)
-                curr = next_p
-            else:
-                break
-        
-        stacks.append(current_stack)
-        
-    return stacks
-
-
-def generate_scaffold_variants(struct: str, L: int) -> List[Tuple[str, str]]:
-    """
-    Generate distinct variants of the consensus structure by systematically
-    masking structural domains (helical stacks).
-
-    Returns list of (description, structure_string).
-    """
-    variants: List[Tuple[str, str]] = []
-    
-    # 1. Base Structure
-    variants.append(("Base", struct))
-
-    # 2. 5'/3' End Unpairing (Existing Strategy)
-    # Parse generic to handle PKs, filter, then reconstruct simple string for masking
-    pairs_all = pairs_from_track(struct)
-    
-    # Generate end-unpaired variant
-    valid_pairs_ends = []
-    for i, j in pairs_all:
-        u, v = sorted((i, j))
-        if u >= UNPAIR_ENDS_LEN and v < (L - UNPAIR_ENDS_LEN):
-            valid_pairs_ends.append((u, v))
+                        _backtrack_track2_loops(l_idx + 1, new_cov_local, l_pairs.union(l_set), l_score + l_en)
+                
+                _backtrack_track2_loops(0, set(), base_set, base_score)
             
-    struct_ends_unpaired = pairs_to_rosetta_string(valid_pairs_ends, L)
-    if struct_ends_unpaired != struct:
-        variants.append(("Unpair 5'/3' Ends", struct_ends_unpaired))
-    
-    # 3. Domain Masking (Ambitious Strategy)
-    # Identify Stacks
-    all_pairs_set = set(pairs_all)
-    stacks = get_helical_stacks(all_pairs_set)
-    
-    # Filter for significant stacks (length >= 2) to avoid noise
-    significant_stacks = [s for s in stacks if len(s) >= 2]
-    
-    # Strategy A: Mask each stack individually
-    for idx, stack in enumerate(significant_stacks):
-        remaining_pairs = all_pairs_set - stack
-        var_str = pairs_to_rosetta_string(list(remaining_pairs), L)
-        variants.append((f"Masked Helix #{idx+1}", var_str))
-        
-    # Strategy B: Mask pairs of stacks (if we have multiple)
-    # Limit combinatorial explosion: Only do this if we have > 2 and < 8 stacks
-    if 2 < len(significant_stacks) <= 20:
-        combo_count = 0
-        for stack_pair in combinations(significant_stacks, 2):
-            if combo_count > 20: break # Safety limit
-            combined_mask = stack_pair[0].union(stack_pair[1])
-            remaining_pairs = all_pairs_set - combined_mask
-            var_str = pairs_to_rosetta_string(list(remaining_pairs), L)
-            variants.append((f"Masked 2 Helices", var_str))
-            combo_count += 1
+            sys.stderr.write(f"[REFINE]     Mask {mask_idx+1}, Seed {seed_idx+1}: Finished Track 2. Found {len(track2_results)} solutions.\n")
 
-    # Deduplicate by string content (keeping first occurrence description)
-    unique_variants = []
-    seen_strs = set()
-    for desc, s_str in variants:
-        if s_str not in seen_strs:
-            seen_strs.add(s_str)
-            unique_variants.append((desc, s_str))
-            
-    # Cap total variants to prevent pipeline timeouts
-    if len(unique_variants) > MAX_SCAFFOLD_VARIANTS:
-        unique_variants = unique_variants[:MAX_SCAFFOLD_VARIANTS]
-        
-    return unique_variants
+            pair_sets = track1_results + track2_results
+            for (p_set, p_score) in pair_sets:
+                cleaned_set = remove_isolated_pairs(p_set)
+                
+                flattened = []
+                valid_struct = True
+                for (i, j) in cleaned_set:
+                    if i < 0 or i >= L or j < 0 or j >= L:
+                        valid_struct = False; break
+                    flattened.append(i)
+                    flattened.append(j)
+                if not valid_struct: continue
+                if len(flattened) != len(set(flattened)): continue 
 
-# =============================================================================
-# Ranking and Selection Logic
-# =============================================================================
+                layers = pairs_to_layers(list(cleaned_set))
+                if len(layers) > 3: continue
+                
+                pk_str = pairs_to_rosetta_string(sorted(list(cleaned_set)), L)
+                
+                # Apply new scoring logic
+                adj_score = calculate_weighted_score(
+                    all_pairs=cleaned_set,
+                    refined_energy=p_score,
+                    scaffold_pairs=base_scaffold
+                )
+                
+                if pk_str not in seen_global or adj_score < seen_global[pk_str]:
+                    seen_global[pk_str] = adj_score
+                    final_unique_structs.append((pk_str, adj_score))
 
-def calculate_structure_score(struct: str) -> float:
-    """
-    Score a secondary structure based on fraction paired and knot complexity.
-    
-    Formula:
-        Score = Sum(Value(pair)) / L
-        
-    Where Value(pair) depends on its topological layer:
-        Layer 0 (Nested):  1.0  (Maximizes standard stability)
-        Layer 1 (Simple):  0.8  (Good, but effectively penalized vs nested)
-        Layer 2+ (Deep):  -1.0  (Heavily penalized artifact/hairball)
-    """
-    L = len(struct)
-    if L == 0: return 0.0
-    
-    pairs = pairs_from_track(struct)
-    layers = pairs_to_layers(pairs)
-    
-    score_sum = 0.0
-    
-    for layer_idx, layer in enumerate(layers):
-        # Count residues involved (2 per pair)
-        n_residues = len(layer) * 2
-        
-        if layer_idx == 0:
-            score_sum += n_residues * 1.0
-        elif layer_idx == 1:
-            score_sum += n_residues * 0.6
-        else:
-            score_sum += n_residues * -1.0
-            
-    return score_sum / L
+    return final_unique_structs
 
-
-def hamming_dist(s1: str, s2: str) -> int:
-    return sum(c1 != c2 for c1, c2 in zip(s1, s2))
-
-
-def filter_and_rank_structures(
-    structs: List[str], 
-    max_output: int = 100,
-    diversity_dist_frac: float = 0.05
-) -> List[str]:
-    """
-    Select the best structures using a Greedy Diversity Clustering approach.
-    """
-    if not structs: return []
-    L = len(structs[0])
-    min_dist = int(L * diversity_dist_frac)
-    
-    # 1. Score and Sort
-    scored = []
-    for s in structs:
-        score = calculate_structure_score(s)
-        scored.append((score, s))
-        
-    scored.sort(key=lambda x: x[0], reverse=True)
-    
-    selected = []
-    
-    # 2. Greedy Selection
-    for score, candidate in scored:
-        if len(selected) >= max_output:
-            break
-        
-        is_distinct = True
-        for sel in selected:
-            if hamming_dist(candidate, sel) < min_dist:
-                is_distinct = False
-                break
-        
-        if is_distinct:
-            selected.append(candidate)
-            
-    return selected
 
 def refine_structure(
     struct: str,
@@ -1115,50 +1080,59 @@ def refine_structure(
     extra_args: Sequence[str] | None = None,
     allsub_cache: Dict = None,
     duplex_cache: Dict = None,
-    return_all: bool = False, # If False, returns filtered set.
+    return_all: bool = False,
+) -> List[Tuple[str, float]]:
+    return _refine_structure_impl(
+        struct=struct,
+        full_seq=full_seq,
+        allsub_exe=allsub_exe,
+        duplex_exe=duplex_exe,
+        min_unpaired_len=min_unpaired_len,
+        temperature=temperature,
+        absolute_energy=absolute_energy,
+        percent_energy=percent_energy,
+        extra_args=extra_args,
+        allsub_cache=allsub_cache,
+        duplex_cache=duplex_cache
+    )
+
+
+def filter_and_rank_structures(
+    structs: List[Tuple[str, float]],
+    max_output: int = 1000,
+    diversity_dist_frac: float = 0.05
 ) -> List[str]:
-    """
-    Wrapper that generates multiple consensus variants (by masking domains)
-    and refines each one.
-    
-    By default (return_all=False), this returns a FILTERED list (top 100),
-    to prevent pipeline explosion.
-    """
-    L = len(full_seq)
-    
-    # 1. Generate Consensus Variants
-    scaffold_candidates = generate_scaffold_variants(struct, L)
-    
-    all_refined = []
-    
-    for idx, (desc, variant_struct) in enumerate(scaffold_candidates):
-        sys.stderr.write(
-            f"   > Variant {idx+1}/{len(scaffold_candidates)} [{desc}]: "
-            f"Refining...\r"
-        )
-        results = _refine_structure_impl(
-            variant_struct, full_seq, allsub_exe, duplex_exe, min_unpaired_len,
-            temperature, absolute_energy, percent_energy, extra_args,
-            allsub_cache, duplex_cache
-        )
-        all_refined.extend(results)
-    
-    sys.stderr.write("\n")
-    
-    # 2. Deduplicate
-    unique_structs = []
-    seen = set()
-    for s in all_refined:
-        if s not in seen:
-            seen.add(s)
-            unique_structs.append(s)
+    # 1. Deduplicate keeping best score
+    best_scores = {}
+    for s, score in structs:
+        if s not in best_scores or score < best_scores[s]:
+            best_scores[s] = score
             
-    if return_all:
-        return unique_structs
-        
-    # 3. Filter by Default
-    filtered = filter_and_rank_structures(unique_structs, max_output=1000, diversity_dist_frac=0.0)
-    return filtered
+    # Convert to list and SORT by score (ascending: lower energy is better)
+    unique = sorted(best_scores.items(), key=lambda x: x[1])
+    
+    if not unique:
+        return []
+
+    L = len(unique[0][0])
+    threshold = max(1, int(round(diversity_dist_frac * L)))
+    
+    kept = []
+    def hamming_dist(s1, s2):
+        return sum(c1 != c2 for c1, c2 in zip(s1, s2))
+
+    for s, score in unique:
+        if len(kept) >= max_output:
+            break
+        is_far_enough = True
+        for k in kept:
+            if hamming_dist(s, k) <= threshold:
+                is_far_enough = False
+                break
+        if is_far_enough:
+            kept.append(s)
+            
+    return kept
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1180,7 +1154,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--allsub-pct", type=float, default=None, help="-p flag for AllSub")
     
     parser.add_argument("--max-structures", type=int, default=1000, 
-                        help="Maximum number of refined structures to output (default: 100).")
+                        help="Maximum number of refined structures to output (default: 1000).")
     parser.add_argument("--diversity-dist", type=float, default=0.05,
                         help="Minimum Hamming distance fraction (0.0-1.0) for diversity clustering.")
     
@@ -1208,22 +1182,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     allsub_cache = {}
     duplex_cache = {}
     
-    # We collect everything first if user wants "all", or just filtered?
-    # To support --db-out-all, we must ask refine_structure to return all, then filter here.
-    
     collect_all_mode = (args.db_out_all is not None)
-    
-    all_structs_for_output = [] # This will hold the big list if requested, or the small list if not.
-    
-    # If explicit full output requested, we ask refine_structure for everything.
-    # If not, we let it filter internally to save memory/time passing lists around.
+    all_structs_for_output: List[Tuple[str, float]] = []
     
     for idx, s in enumerate(structs):
         sys.stderr.write(f"[INFO] Structure {idx+1}/{len(structs)}: Generating consensus variants...\n")
-        
-        # Call refine_structure
-        # If we need the full list (collect_all_mode), pass return_all=True
-        # Otherwise pass False (default) to get pre-filtered list.
         variants = refine_structure(
             struct=s,
             full_seq=full_seq,
@@ -1241,37 +1204,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         all_structs_for_output.extend(variants)
         sys.stderr.write(f"[INFO] Structure {idx+1} yielded {len(variants)} models.\n")
     
-    # 1. Handle "Full" Output
     if args.db_out_all:
         sys.stderr.write(f"[INFO] Writing ALL {len(all_structs_for_output)} structures to {args.db_out_all}\n")
+        
+        # Sort by score for the "all" output as well
+        sorted_all = sorted(all_structs_for_output, key=lambda x: x[1])
+        
         with Path(args.db_out_all).open("w") as f:
             f.write(full_seq + "\n")
             seen_full = set()
-            for rs in all_structs_for_output:
+            for (rs, score) in sorted_all:
                 if rs not in seen_full:
+                    # Optional: Could write score as comment if DB format supported it, 
+                    # but spec says read-only DBs. Just writing structure.
                     f.write(rs + "\n")
                     seen_full.add(rs)
     
-    # 2. Filter for "Main" Output
-    # If we collected all, we must filter now.
-    # If we collected filtered (default), we just write it (maybe re-filter globally if multiple input structs).
-    
-    if collect_all_mode:
-        # We have the big list, filter it down.
-        final_structs = filter_and_rank_structures(
-            all_structs_for_output, 
-            max_output=args.max_structures, 
-            diversity_dist_frac=args.diversity_dist
-        )
-    else:
-        # We have the per-structure filtered lists combined. 
-        # If input db had multiple structures, we might still have > max_structures total.
-        # So we filter again globally to be safe.
-        final_structs = filter_and_rank_structures(
-            all_structs_for_output, 
-            max_output=args.max_structures, 
-            diversity_dist_frac=args.diversity_dist
-        )
+    final_structs = filter_and_rank_structures(
+        all_structs_for_output, 
+        max_output=args.max_structures, 
+        diversity_dist_frac=args.diversity_dist
+    )
     
     with Path(args.db_out).open("w") as f:
         f.write(full_seq + "\n")

@@ -678,21 +678,27 @@ def write_summary_file(
 
     def layer_string(layer_idx: int, layer_pairs: List[Tuple[int, int]]) -> str:
         chars = ["."] * L
-        # Check for overlaps within this layer to avoid misleading output
-        indices = [p for pair in layer_pairs for p in pair]
-        if len(indices) != len(set(indices)):
-             return "(Layer contains overlapping pairs - invalid structure)"
-             
-        # For individual layers summary, typically just use () for clarity,
-        # but to match overall logic let's use the hierarchy char.
-        # Although "layer 0 of this specific set" will always be ().
-        # Let's just use () for the summary layers.
+        
+        # Check for overlaps within this layer and PRUNE them for display
+        # instead of erroring out.
+        clean_pairs = []
+        occupied = set()
+        
+        # Sort pairs (e.g. by first index) to be deterministic
+        for p in sorted(layer_pairs):
+            i, j = p
+            if i > j: i, j = j, i
+            
+            if i not in occupied and j not in occupied:
+                occupied.add(i)
+                occupied.add(j)
+                clean_pairs.append((i, j))
+        
         op, cl = "(", ")"
-        for (i, j) in layer_pairs:
-            if i > j:
-                i, j = j, i
+        for (i, j) in clean_pairs:
             chars[i] = op
             chars[j] = cl
+            
         return "".join(chars)
 
     with open(summary_path, "w") as fh:
