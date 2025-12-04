@@ -13,8 +13,12 @@ Refinement Tracks:
        - Algorithm: Recursive backtracking to generate ALL valid assignments.
        - PRIORITY: Interactions are explored BEFORE local folds to bias results toward
          complex topologies (e.g. simultaneous PKs).
+<<<<<<< HEAD
        - MERGING: Disjoint local structures for the same region are combined (e.g. Helix A + Helix B)
          to ensure we don't miss composite structures if AllSub reports them separately.
+=======
+       - MERGING: Disjoint local structures for the same region are combined.
+>>>>>>> refs/remotes/origin/main
 
     2. Sequential Hierarchical Assembly:
        - Step A: Force all original regions to fold locally. Enumerate all combinations of AllSub structures.
@@ -22,7 +26,11 @@ Refinement Tracks:
             - Identify REMAINING unpaired segments (loops/bulges), min_len=4.
             - Filter pairs of loops by linker length (>= 3nt).
             - Run DuplexFold on valid pairs.
+<<<<<<< HEAD
             - **NEW**: Run AllSub on loops to find missed local helices.
+=======
+            - Run AllSub on loops to find missed local helices.
+>>>>>>> refs/remotes/origin/main
             - Algorithm: Recursive backtracking to enumerate ALL valid sets of non-overlapping
               loop-loop interactions AND loop local folds.
        - Result: Base Structure + Selected Loop Interactions/Folds.
@@ -59,7 +67,11 @@ CANONICAL_PAIRS = {
 }
 UNPAIR_ENDS_LEN = 25       # Length of 5'/3' ends to force unpaired in that specific variant
 MAX_REGIONS_TO_REFINE = 50  # Safety cap: Only refine the N longest runs to prevent explosion
+<<<<<<< HEAD
 MAX_SOLUTIONS = 20000      # Increased to ensure coverage of complex topologies (Double PKs)
+=======
+MAX_SOLUTIONS = 20000      # Applied PER TRACK (so up to 2x this total before filtering)
+>>>>>>> refs/remotes/origin/main
 MAX_SCAFFOLD_VARIANTS = 50 # Limit how many consensus masks we try
 
 # --- Graph Coloring for Layers (Local Definition for Safety) ---
@@ -633,7 +645,13 @@ def _refine_structure_impl(
             runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
         )
 
+<<<<<<< HEAD
     final_pair_sets: List[Set[Tuple[int, int]]] = []
+=======
+    # Separate Lists for Tracks
+    track1_results: List[Set[Tuple[int, int]]] = []
+    track2_results: List[Set[Tuple[int, int]]] = []
+>>>>>>> refs/remotes/origin/main
 
     # =========================================================================
     # TRACK 1: Enumerative Combinatorial (Independent)
@@ -641,11 +659,19 @@ def _refine_structure_impl(
     num_regions = len(runs)
     
     def _backtrack_track1(idx: int, covered: Set[int], current_pairs: Set[Tuple[int, int]]):
+<<<<<<< HEAD
         if len(final_pair_sets) >= MAX_SOLUTIONS:
             return
 
         if idx >= num_regions:
             final_pair_sets.append(current_pairs)
+=======
+        if len(track1_results) >= MAX_SOLUTIONS:
+            return
+
+        if idx >= num_regions:
+            track1_results.append(current_pairs)
+>>>>>>> refs/remotes/origin/main
             return
 
         if idx in covered:
@@ -653,9 +679,12 @@ def _refine_structure_impl(
             return
 
         # STRATEGY CHANGE: Prioritize Interactions over Local Folds.
+<<<<<<< HEAD
         # This helps the depth-first search find multi-interaction topologies (like double PKs)
         # before the solution buffer fills up with simple local-only variants.
 
+=======
+>>>>>>> refs/remotes/origin/main
         # Choice A: Interaction with future region k (Hybrid: Kiss + Compatible Local)
         for k in range(idx + 1, num_regions):
             if k in covered: continue
@@ -666,7 +695,11 @@ def _refine_structure_impl(
                 new_covered_int.add(idx)
                 new_covered_int.add(k)
                 for int_set in opts:
+<<<<<<< HEAD
                     if len(final_pair_sets) >= MAX_SOLUTIONS: return
+=======
+                    if len(track1_results) >= MAX_SOLUTIONS: return
+>>>>>>> refs/remotes/origin/main
                     
                     # KISSING LOOP ENHANCEMENT (Hybrid Logic)
                     used_indices = {x for p in int_set for x in p}
@@ -690,7 +723,11 @@ def _refine_structure_impl(
                     # Iterate combinations
                     for c_i in compatible_idx:
                         for c_k in compatible_k:
+<<<<<<< HEAD
                             if len(final_pair_sets) >= MAX_SOLUTIONS: return
+=======
+                            if len(track1_results) >= MAX_SOLUTIONS: return
+>>>>>>> refs/remotes/origin/main
                             
                             combined_set = int_set.union(c_i).union(c_k)
                             _backtrack_track1(idx + 1, new_covered_int, current_pairs.union(combined_set))
@@ -699,7 +736,11 @@ def _refine_structure_impl(
         new_covered_local = covered.copy()
         new_covered_local.add(idx)
         for loc_set in local_options[idx]:
+<<<<<<< HEAD
             if len(final_pair_sets) >= MAX_SOLUTIONS: return
+=======
+            if len(track1_results) >= MAX_SOLUTIONS: return
+>>>>>>> refs/remotes/origin/main
             _backtrack_track1(idx + 1, new_covered_local, current_pairs.union(loc_set))
 
     _backtrack_track1(0, set(), scaffold_pairs)
@@ -712,7 +753,11 @@ def _refine_structure_impl(
     all_local_lists = [local_options[i] for i in range(num_regions)]
     
     for local_combo in itertools.product(*all_local_lists):
+<<<<<<< HEAD
         if len(final_pair_sets) >= MAX_SOLUTIONS: break
+=======
+        if len(track2_results) >= MAX_SOLUTIONS: break
+>>>>>>> refs/remotes/origin/main
 
         base_set = scaffold_pairs.copy()
         for p_set in local_combo:
@@ -744,7 +789,11 @@ def _refine_structure_impl(
              sub_runs.sort(key=lambda r: r[0])
 
         if len(sub_runs) < 2:
+<<<<<<< HEAD
             final_pair_sets.append(base_set)
+=======
+            track2_results.append(base_set)
+>>>>>>> refs/remotes/origin/main
             continue
 
         # PRECOMPUTE OPTIONS FOR LOOPS: Interaction AND Local
@@ -778,10 +827,17 @@ def _refine_structure_impl(
         num_loops = len(sub_runs)
         
         def _backtrack_track2_loops(l_idx: int, l_covered: Set[int], l_pairs: Set[Tuple[int, int]]):
+<<<<<<< HEAD
             if len(final_pair_sets) >= MAX_SOLUTIONS: return
 
             if l_idx >= num_loops:
                 final_pair_sets.append(l_pairs)
+=======
+            if len(track2_results) >= MAX_SOLUTIONS: return
+
+            if l_idx >= num_loops:
+                track2_results.append(l_pairs)
+>>>>>>> refs/remotes/origin/main
                 return
             
             if l_idx in l_covered:
@@ -798,14 +854,22 @@ def _refine_structure_impl(
                     new_cov_pair.add(l_idx)
                     new_cov_pair.add(k)
                     for int_set in opts:
+<<<<<<< HEAD
                         if len(final_pair_sets) >= MAX_SOLUTIONS: return
+=======
+                        if len(track2_results) >= MAX_SOLUTIONS: return
+>>>>>>> refs/remotes/origin/main
                         _backtrack_track2_loops(l_idx + 1, new_cov_pair, l_pairs.union(int_set))
 
             # Choice B: Loop folds locally (New Feature!)
             new_cov_local = l_covered.copy()
             new_cov_local.add(l_idx)
             for l_set in loop_local_options[l_idx]:
+<<<<<<< HEAD
                 if len(final_pair_sets) >= MAX_SOLUTIONS: return
+=======
+                if len(track2_results) >= MAX_SOLUTIONS: return
+>>>>>>> refs/remotes/origin/main
                 _backtrack_track2_loops(l_idx + 1, new_cov_local, l_pairs.union(l_set))
 
             # Choice C: Loop remains unpaired (Implicitly covered if local_options includes empty set, but ensures safety)
@@ -819,6 +883,13 @@ def _refine_structure_impl(
     # =========================================================================
     # Final Output Generation & Filtering
     # =========================================================================
+<<<<<<< HEAD
+=======
+    
+    # Merge both tracks
+    final_pair_sets = track1_results + track2_results
+
+>>>>>>> refs/remotes/origin/main
     unique_structs = []
     seen = set()
 
