@@ -27,6 +27,11 @@ Refinement Tracks:
     3. Sequential Hierarchical Assembly:
        - Hierarchical approach: Force local folds first, then interact loops.
 
+    4. Post-Process Kissing Loop Discovery:
+       - Intercept top candidates.
+       - Check unpaired apical loops for complementarity.
+       - Add inter-loop (kissing) interactions if topologically valid.
+
     - Validation & Filtering:
        - STRICT CANONICAL PAIR CHECK.
        - ROSETTA FORMAT.
@@ -60,15 +65,16 @@ CANONICAL_PAIRS = {
 # --- Masking Constants ---
 # Replaced static UNPAIR_ENDS_LEN with grid search constants
 END_MASK_STEP = 5           # Increment size for unpairing ends
-MAX_END_MASK_LEN = 45       # Max length to unpair from either end during grid search
+MAX_END_MASK_LEN = 40       # Max length to unpair from either end during grid search
 
-MAX_REGIONS_TO_REFINE = 20  # Safety cap: Only refine the N longest runs to prevent explosion
+MAX_REGIONS_TO_REFINE = 30  # Safety cap: Only refine the N longest runs to prevent explosion
 MAX_SOLUTIONS = 2000      # Applied PER TRACK (so up to 2x this total before filtering)
+KISSING_LOOP_CANDIDATES = 1000 # Max structures to check for kissing loops
 
 # Constraints for Masking to ensure numerical stability
-MAX_HELICES_SEQUENTIAL = 16 # Consider top N helices for single removal
+MAX_HELICES_SEQUENTIAL = 20 # Consider top N helices for single removal
 MAX_HELICES_PAIRWISE = 10   # Consider top N helices for pairwise removal (N*(N-1)/2 combos)
-MAX_SEEDS = 100              # Maximum number of 5'-3' initialization seeds to process per mask
+MAX_SEEDS = 50              # Maximum number of 5'-3' initialization seeds to process per mask
 
 # Scoring Constants
 SCAFFOLD_PAIR_ENERGY = -1.5  # Estimated kcal/mol per scaffold base pair
@@ -783,6 +789,206 @@ def generate_masked_scaffolds(initial_pairs: Set[Tuple[int, int]], seq_len: int)
                 
     return variants
 
+# --- Kissing Loop Discovery ---
+
+def find_hairpin_loops(pairs: Set[Tuple[int, int]], L: int) -> List[Tuple[int, int]]:
+    """
+    Identify unpaired 'hairpin' loops.
+    A hairpin loop is a region (i+1...j-1) that is completely unpaired,
+    where (i, j) is a closing pair.
+    """
+    paired_pos = {p for pair in pairs for p in pair}
+    hairpins = []
+    
+    # Iterate all pairs to see if they close an empty region
+    for i, j in pairs:
+        # Normalize i < j
+        u, v = sorted((i, j))
+        if (v - u) < 2: 
+            continue
+            
+        is_empty = True
+        for k in range(u + 1, v):
+            if k in paired_pos:
+                is_empty = False
+                break
+        
+        if is_empty:
+            hairpins.append((u + 1, v)) # The loop region itself (start, end-exclusive)
+
+    return hairpins
+
+def check_complementarity_heuristic(seq1: str, seq2: str, min_len: int = 3) -> bool:
+    """
+    Fast check if two sequences have any contiguous complementary substring
+    of at least min_len (handling standard WC+GU).
+    """
+    # Simple sliding window check
+    # Check if a k-mer in seq1 (reversed) is comp to seq2
+    # Because kissing loops are antiparallel, we check if seq1 is reverse-complementary to seq2
+    len1, len2 = len(seq1), len(seq2)
+    if len1 < min_len or len2 < min_len:
+        return False
+        
+    for i in range(len1 - min_len + 1):
+        kmer = seq1[i : i + min_len]
+        # Generate target complement
+        target = []
+        for b in kmer:
+            b = b.upper()
+            if b == 'A': target.append('U')
+            elif b == 'U': target.append('A') # Matches A or G
+            elif b == 'G': target.append('C') # Matches C or U
+            elif b == 'C': target.append('G')
+            else: target.append('.') # Wildcard?
+        
+        # Since it's antiparallel, an occurrence of 'target' in seq2 (read 5'-3')
+        # implies a match.
+        # But wobbles (G-U) make exact string matching hard.
+        # Let's brute force checking validity instead of string search.
+        
+        for j in range(len2 - min_len + 1):
+            sub2 = seq2[j : j + min_len]
+            # Check pairing kmer (i) vs sub2 (j) antiparallel
+            # kmer[0] pairs with sub2[end], etc.
+            match = True
+            for k in range(min_len):
+                if not is_canonical(kmer[k], sub2[min_len - 1 - k]):
+                    match = False
+                    break
+            if match:
+                return True
+    return False
+
+def detect_and_add_kissing_loops(
+    candidates: List[Tuple[str, float]], 
+    full_seq: str,
+    duplex_exe: Path, 
+    temperature: float | None,
+    extra_args: Sequence[str] | None,
+    duplex_cache: Dict,
+    top_n: int = 1000
+) -> List[Tuple[str, float]]:
+    """
+    Intercept the top N candidates, scan for interacting hairpin loops,
+    validate with DuplexFold, and add new structures with updated scores.
+    """
+    # 1. Sort and slice
+    sorted_cands = sorted(candidates, key=lambda x: x[1])
+    top_candidates = sorted_cands[:top_n]
+    
+    new_structures = []
+    L = len(full_seq)
+
+    sys.stderr.write(f"[REFINE] Checking top {len(top_candidates)} structures for kissing loops...\n")
+
+    for (struct_str, base_score) in top_candidates:
+        pairs = _pairs_from_struct(struct_str)
+        # Find hairpin loops (pure unpaired regions closed by a pair)
+        loops = find_hairpin_loops(pairs, L)
+        
+        if len(loops) < 2:
+            continue
+            
+        # Check pairs of loops
+        for l_idx_a in range(len(loops)):
+            for l_idx_b in range(l_idx_a + 1, len(loops)):
+                start_a, end_a = loops[l_idx_a]
+                start_b, end_b = loops[l_idx_b]
+                
+                # Check distance (sterics)
+                if abs(start_a - start_b) < 4: continue
+                
+                seq_a = full_seq[start_a : end_a]
+                seq_b = full_seq[start_b : end_b]
+                
+                # Heuristic Filter
+                if not check_complementarity_heuristic(seq_a, seq_b, min_len=3):
+                    continue
+                
+                # Run DuplexFold
+                dkey = (seq_a, seq_b, temperature, tuple(extra_args or []))
+                if dkey in duplex_cache:
+                    d_res = duplex_cache[dkey]
+                else:
+                    d_res = call_rnastructure_duplexfold(
+                        duplex_exe, seq_a, seq_b, temperature, extra_args
+                    )
+                    duplex_cache[dkey] = d_res
+                
+                if not d_res:
+                    continue
+                    
+                for (pair_list, d_energy) in d_res:
+                    if not pair_list: continue
+                    
+                    # Convert local loop coords to global
+                    new_pairs = set()
+                    for i_loc, j_loc in pair_list:
+                        # DuplexFold returns 1-based index relative to input subseqs
+                        gi = start_a + i_loc - 1
+                        gj = start_b + j_loc - 1
+                        if gi > gj: gi, gj = gj, gi
+                        new_pairs.add((gi, gj))
+                    
+                    # Validate
+                    canon_pairs = validate_and_filter_pairs(new_pairs, full_seq)
+                    if not canon_pairs: continue
+                    
+                    # Ensure no overlap with existing structure (should be safe by def of hairpin loop, but double check)
+                    existing_indices = {x for p in pairs for x in p}
+                    cand_indices = {x for p in canon_pairs for x in p}
+                    if not existing_indices.isdisjoint(cand_indices):
+                        continue
+                        
+                    combined_set = pairs.union(canon_pairs)
+                    
+                    # Check complexity
+                    layers = pairs_to_layers(list(combined_set))
+                    if len(layers) > 3: continue
+                    
+                    new_str = pairs_to_rosetta_string(list(combined_set), L)
+                    
+                    # --- SCORING ---
+                    # We accept the 'base_score' as the current refined score.
+                    # We add the new interaction score, weighted by its layer depth.
+                    # This is an approximation since we don't have the original raw energy components separately.
+                    
+                    # Map new pairs to layers
+                    pair_to_layer = {}
+                    for lay_idx, lay in enumerate(layers):
+                        for p in lay: pair_to_layer[p] = lay_idx
+                        
+                    # Calculate additive score term
+                    avg_duplex_energy = d_energy / len(canon_pairs)
+                    added_score = 0.0
+                    for p in canon_pairs:
+                        layer = pair_to_layer.get(p, 0)
+                        w = WEIGHT_L0
+                        if layer == 1: w = WEIGHT_L1
+                        elif layer >= 2: w = WEIGHT_L2_PLUS
+                        added_score += (w * avg_duplex_energy)
+                        
+                    new_total_score = base_score + added_score
+                    new_structures.append((new_str, new_total_score))
+
+    sys.stderr.write(f"[REFINE] Found {len(new_structures)} kissing-loop variants.\n")
+    
+    # Combine and sort
+    all_results = candidates + new_structures
+    all_results.sort(key=lambda x: x[1])
+    
+    # Deduplicate by structure string
+    seen = set()
+    unique = []
+    for s, score in all_results:
+        if s not in seen:
+            seen.add(s)
+            unique.append((s, score))
+            
+    return unique[:top_n]
+
+
 # --- Main Refinement Logic ---
 
 def _refine_structure_impl(
@@ -1064,8 +1270,22 @@ def _refine_structure_impl(
                 if pk_str not in seen_global or adj_score < seen_global[pk_str]:
                     seen_global[pk_str] = adj_score
                     final_unique_structs.append((pk_str, adj_score))
+    
+    # --- STEP 4: Post-Process Kissing Loop Discovery ---
+    # Intercept top candidates and look for interacting hairpin loops
+    # limiting to top N to save runtime.
+    
+    enhanced_structs = detect_and_add_kissing_loops(
+        candidates=final_unique_structs,
+        full_seq=full_seq,
+        duplex_exe=duplex_exe,
+        temperature=temperature,
+        extra_args=extra_args,
+        duplex_cache=duplex_cache,
+        top_n=KISSING_LOOP_CANDIDATES
+    )
 
-    return final_unique_structs
+    return enhanced_structs
 
 
 def refine_structure(
