@@ -11,12 +11,7 @@ sto: combined_1.cacofold.sto
 cov: combined_1.cacofold.cov
 sto: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.sto
 cov: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.cov
-<<<<<<< Updated upstream
-seq_name: "4GMA_1_Chain"   # sequence ID in the .sto file
-=======
-seq_name: "6VMY_1_Chain"   # sequence ID in the .sto file
->>>>>>> Stashed changes
-
+seq_name: "9E5I_1_Chains"   # sequence ID in the .sto file
 
 #fold_exe: "/path/to/RNAstructure/exe/Fold"
 allsub_exe: "/home/lukas/research/RNAstructure/exe/AllSub"
@@ -32,39 +27,12 @@ sample:
   beta: 1
   seed: 0
   pk_alpha: 2
-<<<<<<< Updated upstream
-<<<<<<< HEAD
   pk_filter_frac: 0.025
   pk_filter_max_cross_per_pair: 4
   pk_filter_max_total_cross: 20
   pk_depth_limit: 1
 
   cov_mode: "logE"          # "off", "score", "power", ...
-=======
-  pk_filter_frac: 0.02
-  pk_filter_max_cross_per_pair: 2
-  pk_filter_max_total_cross: 10
-
-  cov_mode: "logE"          # "off", "score", "power", ...
-  cov_alpha: 2.0
-  cov_min_power: 1.0
-  cov_forbid_negative: True
-  cov_negative_E: 1.0
-
-  pk_filter_frac: 0.025
-  pk_filter_max_cross_per_pair: 4
-  pk_filter_max_total_cross: 20
-  pk_depth_limit: 1
-
-  cov_mode: "logE"          # "off", "score", "power", ...
->>>>>>> refs/remotes/origin/main
-=======
-  pk_filter_frac: 0.025
-  pk_filter_max_cross_per_pair: 10
-  pk_filter_max_total_cross: 10
-
-  cov_mode: "logE"          # "off", "score", "power", ...
->>>>>>> Stashed changes
   cov_alpha: 3.0
   cov_min_power: 1.0
   cov_forbid_negative: False
@@ -89,11 +57,7 @@ ensure_valid:
 rosetta:
   hamming_threshold: 0
   hamming_frac: 0.0
-<<<<<<< HEAD
-=======
-  max_structures: 100000
->>>>>>> refs/remotes/origin/main
-  max_structures: 500
+  max_structures: 1000
 
 # --- I/O layout ---
 io:
