@@ -4,19 +4,25 @@
 
 set -e
 
+# Use venv if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SCRIPT_DIR/.venv" ]; then
+    source "$SCRIPT_DIR/.venv/bin/activate"
+fi
+
 echo "=== Compile Check ==="
-python -m compileall src/ tests/ -q
+python3 -m compileall src/ tests/ -q
 
 echo "=== Unit Tests ==="
-python -m pytest tests/ -q
+python3 -m pytest tests/ -q
 
 echo "=== Lint ==="
-ruff check src/ tests/ --quiet || ruff check src/ tests/
+python3 -m ruff check src/ tests/ --quiet || python3 -m ruff check src/ tests/
 
 echo "=== Format Check ==="
-ruff format --check src/ tests/
+python3 -m ruff format --check src/ tests/
 
 echo "=== Type Check ==="
-mypy src/lib/ --ignore-missing-imports
+python3 -m mypy src/lib/ --ignore-missing-imports
 
 echo "=== All QC Passed ==="

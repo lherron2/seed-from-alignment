@@ -160,8 +160,59 @@ def update_pk_cache_on_add(
     Returns:
         Tuple of (delta_pk_pairs, delta_max, new_cache)
     """
-    # Placeholder implementation - will be filled in Phase 1
-    raise NotImplementedError("update_pk_cache_on_add not yet implemented")
+    # Normalize edge
+    i, j = edge
+    if i > j:
+        edge = (j, i)
+
+    old_pk_pairs_count = len(cache.pk_pairs)
+    old_max = cache.max_crossings
+
+    # Create new cache with copied data
+    new_cross_counts = dict(cache.cross_counts)
+    new_pk_pairs = set(cache.pk_pairs)
+    new_total = cache.total_crossings
+    new_max = cache.max_crossings
+
+    # Find all pairs that cross the new edge
+    crossing_pairs = crossing_partners(edge, matching)
+    new_edge_crossings = len(crossing_pairs)
+
+    # Update cross counts for existing pairs
+    for p in crossing_pairs:
+        old_count = new_cross_counts.get(p, 0)
+        new_count = old_count + 1
+        new_cross_counts[p] = new_count
+
+        # If this pair just became a PK pair, add it
+        if old_count == 0:
+            new_pk_pairs.add(p)
+
+        # Update max
+        if new_count > new_max:
+            new_max = new_count
+
+    # Add the new edge to cross counts
+    new_cross_counts[edge] = new_edge_crossings
+    if new_edge_crossings > 0:
+        new_pk_pairs.add(edge)
+        if new_edge_crossings > new_max:
+            new_max = new_edge_crossings
+
+    # Update total crossings
+    new_total += new_edge_crossings
+
+    new_cache = PKCache(
+        pk_pairs=new_pk_pairs,
+        cross_counts=new_cross_counts,
+        total_crossings=new_total,
+        max_crossings=new_max,
+    )
+
+    delta_pk_pairs = len(new_pk_pairs) - old_pk_pairs_count
+    delta_max = new_max - old_max
+
+    return delta_pk_pairs, delta_max, new_cache
 
 
 def update_pk_cache_on_remove(
@@ -179,8 +230,62 @@ def update_pk_cache_on_remove(
     Returns:
         Tuple of (delta_pk_pairs, delta_max, new_cache)
     """
-    # Placeholder implementation - will be filled in Phase 1
-    raise NotImplementedError("update_pk_cache_on_remove not yet implemented")
+    # Normalize edge
+    i, j = edge
+    if i > j:
+        edge = (j, i)
+
+    old_pk_pairs_count = len(cache.pk_pairs)
+    old_max = cache.max_crossings
+
+    # Create new cache with copied data
+    new_cross_counts = dict(cache.cross_counts)
+    new_pk_pairs = set(cache.pk_pairs)
+    new_total = cache.total_crossings
+
+    # Get the crossing count of the edge being removed
+    edge_crossings = new_cross_counts.get(edge, 0)
+
+    # Find all pairs that crossed the removed edge (in the remaining matching)
+    # These are pairs in matching - {edge} that cross edge
+    remaining_matching = matching - {edge}
+    crossing_pairs = crossing_partners(edge, remaining_matching)
+
+    # Update cross counts for the pairs that crossed the removed edge
+    for p in crossing_pairs:
+        old_count = new_cross_counts.get(p, 0)
+        new_count = max(0, old_count - 1)
+        new_cross_counts[p] = new_count
+
+        # If this pair is no longer a PK pair, remove it
+        if new_count == 0:
+            new_pk_pairs.discard(p)
+
+    # Remove the edge from cross counts
+    if edge in new_cross_counts:
+        del new_cross_counts[edge]
+    new_pk_pairs.discard(edge)
+
+    # Update total crossings
+    new_total = max(0, new_total - edge_crossings)
+
+    # Recompute max (we need to do this since we might have decreased the max)
+    new_max = 0
+    for count in new_cross_counts.values():
+        if count > new_max:
+            new_max = count
+
+    new_cache = PKCache(
+        pk_pairs=new_pk_pairs,
+        cross_counts=new_cross_counts,
+        total_crossings=new_total,
+        max_crossings=new_max,
+    )
+
+    delta_pk_pairs = len(new_pk_pairs) - old_pk_pairs_count
+    delta_max = new_max - old_max
+
+    return delta_pk_pairs, delta_max, new_cache
 
 
 def pairs_to_layers(

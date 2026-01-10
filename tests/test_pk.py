@@ -6,6 +6,8 @@ from src.lib.pk import (
     crosses,
     crossing_partners,
     pairs_to_layers,
+    update_pk_cache_on_add,
+    update_pk_cache_on_remove,
 )
 
 
@@ -126,3 +128,123 @@ class TestPairsToLayers:
         """Crossing pairs go in different layers."""
         layers = pairs_to_layers([(0, 5), (2, 8)])
         assert len(layers) == 2
+
+
+class TestUpdatePKCacheOnAdd:
+    """Tests for update_pk_cache_on_add()."""
+
+    def test_add_non_crossing(self) -> None:
+        """Adding non-crossing pair doesn't create PK pairs."""
+        # Start with nested pairs
+        matching = {(0, 10), (2, 8)}
+        cache = build_pk_cache(matching)
+
+        # Add another nested pair (4, 6)
+        edge = (4, 6)
+        delta_pk, delta_max, new_cache = update_pk_cache_on_add(edge, matching, cache)
+
+        assert delta_pk == 0
+        assert delta_max == 0
+        assert new_cache.total_crossings == 0
+        assert len(new_cache.pk_pairs) == 0
+
+    def test_add_crossing(self) -> None:
+        """Adding crossing pair creates PK pairs."""
+        # Start with single pair
+        matching = {(0, 5)}
+        cache = build_pk_cache(matching)
+
+        # Add crossing pair
+        edge = (2, 8)  # Crosses (0, 5)
+        delta_pk, delta_max, new_cache = update_pk_cache_on_add(edge, matching, cache)
+
+        assert new_cache.total_crossings == 1
+        assert (0, 5) in new_cache.pk_pairs
+        assert (2, 8) in new_cache.pk_pairs
+        assert len(new_cache.pk_pairs) == 2
+
+    def test_add_matches_full_rebuild(self) -> None:
+        """Incremental add matches full rebuild."""
+        matching = {(0, 10), (2, 8), (12, 20)}
+        cache = build_pk_cache(matching)
+
+        # Add a crossing pair
+        edge = (5, 15)  # Crosses (0, 10) and (12, 20)
+        _, _, new_cache = update_pk_cache_on_add(edge, matching, cache)
+
+        # Compare with full rebuild
+        full_matching = matching | {edge}
+        full_cache = build_pk_cache(full_matching)
+
+        assert new_cache.total_crossings == full_cache.total_crossings
+        assert new_cache.pk_pairs == full_cache.pk_pairs
+        assert new_cache.max_crossings == full_cache.max_crossings
+
+
+class TestUpdatePKCacheOnRemove:
+    """Tests for update_pk_cache_on_remove()."""
+
+    def test_remove_crossing_pair(self) -> None:
+        """Removing crossing pair eliminates PK."""
+        matching = {(0, 5), (2, 8)}
+        cache = build_pk_cache(matching)
+        assert cache.total_crossings == 1
+
+        # Remove one of the crossing pairs
+        edge = (2, 8)
+        delta_pk, delta_max, new_cache = update_pk_cache_on_remove(edge, matching, cache)
+
+        assert new_cache.total_crossings == 0
+        assert len(new_cache.pk_pairs) == 0
+
+    def test_remove_non_pk_pair(self) -> None:
+        """Removing non-PK pair from crossing matching."""
+        matching = {(0, 5), (2, 8), (15, 20)}  # (15,20) doesn't cross others
+        cache = build_pk_cache(matching)
+
+        # Remove the non-crossing pair
+        edge = (15, 20)
+        _, _, new_cache = update_pk_cache_on_remove(edge, matching, cache)
+
+        # PKs should remain
+        assert new_cache.total_crossings == 1
+        assert (0, 5) in new_cache.pk_pairs
+        assert (2, 8) in new_cache.pk_pairs
+
+    def test_remove_matches_full_rebuild(self) -> None:
+        """Incremental remove matches full rebuild."""
+        matching = {(0, 5), (2, 8), (3, 10)}  # Multiple crossings
+        cache = build_pk_cache(matching)
+
+        # Remove one pair
+        edge = (2, 8)
+        _, _, new_cache = update_pk_cache_on_remove(edge, matching, cache)
+
+        # Compare with full rebuild
+        remaining = matching - {edge}
+        full_cache = build_pk_cache(remaining)
+
+        assert new_cache.total_crossings == full_cache.total_crossings
+        assert new_cache.pk_pairs == full_cache.pk_pairs
+        assert new_cache.max_crossings == full_cache.max_crossings
+
+
+class TestPKCacheReversibility:
+    """Tests for add/remove reversibility."""
+
+    def test_add_remove_roundtrip(self) -> None:
+        """Add then remove returns to original state."""
+        matching = {(0, 10), (2, 8)}
+        cache = build_pk_cache(matching)
+
+        edge = (5, 15)
+        _, _, cache_after_add = update_pk_cache_on_add(edge, matching, cache)
+
+        # Now remove
+        new_matching = matching | {edge}
+        _, _, cache_after_remove = update_pk_cache_on_remove(edge, new_matching, cache_after_add)
+
+        # Should match original
+        assert cache_after_remove.total_crossings == cache.total_crossings
+        assert cache_after_remove.pk_pairs == cache.pk_pairs
+        assert cache_after_remove.max_crossings == cache.max_crossings
