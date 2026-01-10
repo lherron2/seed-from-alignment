@@ -7,14 +7,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Set
+
+from src.lib import filter_db_for_rosetta as fdr
+from src.lib import refine_unpaired_regions as rup
 
 # Import the existing building blocks
 from src.lib import sample_cacofold_structures as scs
-from src.lib import refine_unpaired_regions as rup
-from src.lib import filter_db_for_rosetta as fdr
 
 
 @dataclass
@@ -24,12 +25,12 @@ class SampleConfig:
     thin: int = 10
     min_loop_sep: int = 1
     beta: float = 1.0
-    seed: Optional[int] = None
+    seed: int | None = None
     pk_alpha: float = 2.0
     pk_filter_frac: float = 0.2
     pk_filter_max_cross_per_pair: int = 2
     pk_filter_max_total_cross: int = 30
-    pk_depth_limit: Optional[int] = None
+    pk_depth_limit: int | None = None
     cov_mode: str = "off"
     cov_alpha: float = 1.0
     cov_min_power: float = 0.0
@@ -40,11 +41,31 @@ class SampleConfig:
 @dataclass
 class RefineConfig:
     min_unpaired: int = 15
-    temperature: Optional[float] = None
-    allsub_abs: Optional[float] = None
-    allsub_pct: Optional[float] = None
+    temperature: float | None = None
+    allsub_abs: float | None = None
+    allsub_pct: float | None = None
     fold_extra_args: Sequence[str] = ()
     max_structures: int = 1000  # Default limit for refined output
+
+    # Masking Grid Constants
+    end_mask_step: int = 5
+    max_end_mask_len: int = 40
+    max_helices_sequential: int = 20
+    max_helices_pairwise: int = 10
+
+    # Initialization
+    max_seeds: int = 50
+
+    # Heuristics
+    max_regions_to_refine: int = 30
+    max_solutions: int = 2000
+    kissing_loop_candidates: int = 1000
+
+    # Scoring Weights
+    scaffold_pair_energy: float = -1.5
+    weight_l0: float = 1.0
+    weight_l1: float = 0.6
+    weight_l2_plus: float = -1.0
 
 
 @dataclass
@@ -58,7 +79,7 @@ class EnsureValidConfig:
 class RosettaConfig:
     hamming_threshold: int = 0
     hamming_frac: float = 0.05
-    max_structures: Optional[int] = None
+    max_structures: int | None = None
 
 
 @dataclass
@@ -69,16 +90,16 @@ class IOConfig:
     sampled_db: Path
     valid_db: Path
     rosetta_db: Path
-    summary: Optional[Path]
+    summary: Path | None
 
 
 @dataclass
 class PipelineConfig:
     sto: Path
-    cov: Optional[Path]
+    cov: Path | None
     seq_name: str
     allsub_exe: Path
-    duplex_exe: Optional[Path]
+    duplex_exe: Path | None
     sample: SampleConfig
     refine: RefineConfig
     ensure_valid: EnsureValidConfig
@@ -86,7 +107,7 @@ class PipelineConfig:
     io: IOConfig
 
 
-def _resolve(path_str: Optional[str], base: Path) -> Optional[Path]:
+def _resolve(path_str: str | None, base: Path) -> Path | None:
     if path_str is None:
         return None
     p = Path(path_str)
@@ -170,6 +191,7 @@ def load_pipeline_config(path: Path) -> PipelineConfig:
         io=io,
     )
 
+
 def filter_consensus_loop_sep(struct: str, min_loop: int = 2) -> str:
     """
     Ensure every base pair (i, j) has |j - i - 1| >= min_loop.
@@ -179,15 +201,16 @@ def filter_consensus_loop_sep(struct: str, min_loop: int = 2) -> str:
     chars = list(struct)
     stack = []
     for i, ch in enumerate(chars):
-        if ch == '(':
+        if ch == "(":
             stack.append(i)
-        elif ch == ')':
+        elif ch == ")":
             if stack:
                 j = stack.pop()
                 if (i - j - 1) < min_loop:
-                    chars[i] = '.'
-                    chars[j] = '.'
+                    chars[i] = "."
+                    chars[j] = "."
     return "".join(chars)
+
 
 def get_consensus_db(cfg: PipelineConfig) -> Path:
     sto_path = cfg.sto
@@ -230,7 +253,7 @@ def get_consensus_db(cfg: PipelineConfig) -> Path:
             )
         except Exception:
             candidate_pairs = []
-        
+
         cfg.io.summary.parent.mkdir(parents=True, exist_ok=True)
         scs.write_summary_file(
             summary_path=str(cfg.io.summary),
@@ -248,16 +271,17 @@ def get_consensus_db(cfg: PipelineConfig) -> Path:
 
     return cfg.io.consensus_db
 
+
 def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
     full_seq = rup.read_ungapped_seq_from_sto(cfg.sto, cfg.seq_name)
     structs = rup.read_db_structures(db_in)
 
-    sys.stderr.write(
-        f"[PIPELINE] Refining {len(structs)} structures from {db_in} → {db_out}\n"
-    )
+    sys.stderr.write(f"[PIPELINE] Refining {len(structs)} structures from {db_in} → {db_out}\n")
 
     allsub_exe = cfg.allsub_exe
     duplex_exe = cfg.duplex_exe
+
+    # Extract config values
     min_unpaired = cfg.refine.min_unpaired
     temperature = cfg.refine.temperature
     abs_energy = cfg.refine.allsub_abs
@@ -269,7 +293,7 @@ def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
     duplex_cache = {}
 
     # rup.refine_structure returns List[Tuple[str, float]]
-    refined_structs_with_scores: List[Tuple[str, float]] = []
+    refined_structs_with_scores: list[tuple[str, float]] = []
 
     for idx, s in enumerate(structs):
         variants = rup.refine_structure(
@@ -283,7 +307,20 @@ def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
             percent_energy=pct_energy,
             extra_args=extra_args,
             allsub_cache=allsub_cache,
-            duplex_cache=duplex_cache
+            duplex_cache=duplex_cache,
+            # Pass all scriptable params
+            end_mask_step=cfg.refine.end_mask_step,
+            max_end_mask_len=cfg.refine.max_end_mask_len,
+            max_helices_sequential=cfg.refine.max_helices_sequential,
+            max_helices_pairwise=cfg.refine.max_helices_pairwise,
+            max_seeds=cfg.refine.max_seeds,
+            max_regions_to_refine=cfg.refine.max_regions_to_refine,
+            max_solutions=cfg.refine.max_solutions,
+            kissing_loop_candidates=cfg.refine.kissing_loop_candidates,
+            scaffold_pair_energy=cfg.refine.scaffold_pair_energy,
+            weight_l0=cfg.refine.weight_l0,
+            weight_l1=cfg.refine.weight_l1,
+            weight_l2_plus=cfg.refine.weight_l2_plus,
         )
         refined_structs_with_scores.extend(variants)
 
@@ -311,17 +348,16 @@ def refine_db(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
         for rs, score in unique_refined:
             fh.write(rs + "\n")
 
-    sys.stderr.write(
-        f"[PIPELINE] Wrote {len(unique_refined)} refined structures to {db_out}\n"
-    )
+    sys.stderr.write(f"[PIPELINE] Wrote {len(unique_refined)} refined structures to {db_out}\n")
     return db_out
 
-def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> Path:
+
+def sample_pk(cfg: PipelineConfig, refined_db: Path | None, out_db: Path) -> Path:
     sto_path = cfg.sto
     seq_name = cfg.seq_name
     seqs, ss_tracks = scs.parse_stockholm_single(str(sto_path))
     ungapped_seq = "".join(ch for ch in seqs[seq_name] if ch not in scs.GAP_CHARS)
-    
+
     cov = None
     if cfg.cov is not None:
         aligned_seq = seqs[seq_name]
@@ -329,11 +365,15 @@ def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> 
         cov = scs.load_cov_stats(str(cfg.cov), aln2seq)
 
     L, candidate_pairs = scs.extract_candidate_pairs(
-        seq_name, seqs, ss_tracks, cov=cov, 
-        cov_mode=cfg.sample.cov_mode, cov_alpha=cfg.sample.cov_alpha,
+        seq_name,
+        seqs,
+        ss_tracks,
+        cov=cov,
+        cov_mode=cfg.sample.cov_mode,
+        cov_alpha=cfg.sample.cov_alpha,
         cov_min_power=cfg.sample.cov_min_power,
         cov_forbid_negative=cfg.sample.cov_forbid_negative,
-        cov_negative_E=cfg.sample.cov_negative_E
+        cov_negative_E=cfg.sample.cov_negative_E,
     )
 
     refined_structs = []
@@ -343,19 +383,20 @@ def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> 
     out_db.parent.mkdir(parents=True, exist_ok=True)
     with out_db.open("w") as fh:
         fh.write(ungapped_seq + "\n")
-        
+
         if refined_structs:
             for refined in refined_structs:
                 # Parse all fixed pairs from the scaffold
                 scaffold_pairs = rup._pairs_from_struct(refined)
                 scaffold_pos = {p for pair in scaffold_pairs for p in pair}
-                
+
                 # Filter out candidates that conflict with locked scaffold
                 filtered_candidates = [
-                    (i, j, w) for (i, j, w) in candidate_pairs
+                    (i, j, w)
+                    for (i, j, w) in candidate_pairs
                     if i not in scaffold_pos and j not in scaffold_pos
                 ]
-                
+
                 # Pass scaffold pairs directly to the sampler
                 pk_samples = scs.sample_matchings(
                     L=L,
@@ -371,7 +412,7 @@ def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> 
                     pk_filter_max_cross_per_pair=cfg.sample.pk_filter_max_cross_per_pair,
                     pk_filter_max_total_cross=cfg.sample.pk_filter_max_total_cross,
                     pk_depth_limit=cfg.sample.pk_depth_limit,
-                    scaffold_pairs=scaffold_pairs  # <-- Scaffold enforced in sampler
+                    scaffold_pairs=scaffold_pairs,  # <-- Scaffold enforced in sampler
                 )
 
                 for pk_set in pk_samples:
@@ -379,8 +420,8 @@ def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> 
                     pk_str = scs.pairs_to_pk_string(sorted(pk_set), L)
                     fh.write(pk_str + "\n")
         else:
-             # Fallback: no refinement
-             pk_samples = scs.sample_matchings(
+            # Fallback: no refinement
+            pk_samples = scs.sample_matchings(
                 L=L,
                 candidate_pairs=candidate_pairs,
                 n_samples=cfg.sample.n_samples,
@@ -395,22 +436,24 @@ def sample_pk(cfg: PipelineConfig, refined_db: Optional[Path], out_db: Path) -> 
                 pk_filter_max_total_cross=cfg.sample.pk_filter_max_total_cross,
                 pk_depth_limit=cfg.sample.pk_depth_limit,
             )
-             for pk_set in pk_samples:
+            for pk_set in pk_samples:
                 pk_str = scs.pairs_to_pk_string(sorted(pk_set), L)
                 fh.write(pk_str + "\n")
 
     return out_db
 
+
 def ensure_valid(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
     # Using existing logic placeholder
     structs = fdr.read_db_structures(db_in)
     # ... (filtering logic would go here) ...
-    fdr.write_db_structures(db_out, structs) 
+    fdr.write_db_structures(db_out, structs)
     return db_out
+
 
 def make_rosetta_ready(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
     structs = fdr.read_db_structures(db_in)
-    
+
     # Read sequence using fdr helper which handles cleaning/uppercasing
     try:
         seq = fdr.read_ungapped_seq_from_sto(cfg.sto, cfg.seq_name)
@@ -419,12 +462,14 @@ def make_rosetta_ready(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
 
     if seq is None:
         raise ValueError(f"Sequence {cfg.seq_name} read from {cfg.sto} is None.")
-        
-    sys.stderr.write(f"[PIPELINE] Loaded sequence {cfg.seq_name} (len={len(seq)}) for Rosetta conversion.\n")
-    
+
+    sys.stderr.write(
+        f"[PIPELINE] Loaded sequence {cfg.seq_name} (len={len(seq)}) for Rosetta conversion.\n"
+    )
+
     # Dedup first
     deduped = fdr.deduplicate(structs)
-    
+
     # Hamming merge
     merged = deduped
     # ... (skipping re-implementation of merge_by_hamming calls for brevity, reusing fdr)
@@ -441,17 +486,20 @@ def make_rosetta_ready(cfg: PipelineConfig, db_in: Path, db_out: Path) -> Path:
             # Pass seq as keyword to be absolutely safe
             ps, _ = fdr.prune_noncomplementary_pairs(rn, seq=seq)
             pruned.append(ps)
-        except ValueError as e:
+        except ValueError:
             dropped += 1
             # Optional: Log failing structures to stderr if needed
             # sys.stderr.write(f"[WARN] Dropped invalid structure {i}: {e}\n")
             pass
-    
+
     if dropped > 0:
-        sys.stderr.write(f"[PIPELINE] Dropped {dropped} structures due to validation errors (e.g. overlapping pairs).\n")
+        sys.stderr.write(
+            f"[PIPELINE] Dropped {dropped} structures due to validation errors (e.g. overlapping pairs).\n"
+        )
 
     fdr.write_db_structures(db_out, fdr.deduplicate(pruned), seq=seq)
     return db_out
+
 
 def run_pipeline(cfg: PipelineConfig, mode: str = "refine_first") -> Path:
     mode = mode.lower()
@@ -468,10 +516,11 @@ def run_pipeline(cfg: PipelineConfig, mode: str = "refine_first") -> Path:
     # refine_first
     refined_consensus_db = refine_db(cfg, db_in=consensus_db, db_out=cfg.io.refined_db)
     sampled_db = sample_pk(cfg, refined_db=refined_consensus_db, out_db=cfg.io.sampled_db)
-    
+
     return make_rosetta_ready(cfg, db_in=sampled_db, db_out=cfg.io.rosetta_db)
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="CaCoFold pipeline wrapper.")
     parser.add_argument("-c", "--config", required=True, help="Path to config file.")
     parser.add_argument("--mode", default="refine_first")

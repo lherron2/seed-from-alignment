@@ -1,0 +1,6 @@
+# R-scape covariation stats (synthetic test data)
+# in_CaCoFold left right score E-value P-value subs power
+*           1    12    5.2    0.001    0.001    10    0.8
+*           2    11    4.8    0.002    0.002     8    0.7
+*           3    10    4.5    0.003    0.003     7    0.7
+*           4     9    4.2    0.004    0.004     6    0.6

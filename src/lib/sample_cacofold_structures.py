@@ -11,36 +11,33 @@ Output .db format:
 import argparse
 import math
 import random
-import string
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Set, Optional
 
 # Alignment gaps
 GAP_CHARS = set("-._~")
 
 # WUSS bracket pairs + Extended PK support (a-z)
 # Matching the hierarchy used in refine_unpaired_regions
-OPEN_TO_CLOSE = {
-    "(": ")", 
-    "[": "]", 
-    "{": "}", 
-    "<": ">"
-}
+OPEN_TO_CLOSE = {"(": ")", "[": "]", "{": "}", "<": ">"}
 # Add a-z -> A-Z
 for i in range(26):
-    c_lower = chr(ord('a') + i)
-    c_upper = chr(ord('A') + i)
+    c_lower = chr(ord("a") + i)
+    c_upper = chr(ord("A") + i)
     OPEN_TO_CLOSE[c_lower] = c_upper
 
 CLOSE_TO_OPEN = {v: k for k, v in OPEN_TO_CLOSE.items()}
 
 # Canonical base pairs (including GU wobble)
 CANONICAL_BASE_PAIRS = {
-    ("A", "U"), ("U", "A"),
-    ("G", "C"), ("C", "G"),
-    ("G", "U"), ("U", "G"),  # wobble
+    ("A", "U"),
+    ("U", "A"),
+    ("G", "C"),
+    ("C", "G"),
+    ("G", "U"),
+    ("U", "G"),  # wobble
 }
+
 
 def is_canonical_pair(b1: str, b2: str) -> bool:
     """Return True if (b1, b2) is a canonical Watson–Crick or GU wobble pair."""
@@ -51,7 +48,8 @@ def is_canonical_pair(b1: str, b2: str) -> bool:
 
 # ------------------ Parsing Stockholm + WUSS ------------------ #
 
-def parse_stockholm_single(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+
+def parse_stockholm_single(path: str) -> tuple[dict[str, str], dict[str, str]]:
     """
     Parse a SINGLE Stockholm alignment.
 
@@ -62,10 +60,10 @@ def parse_stockholm_single(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
     ss_tracks : dict
         tag -> full-length SS_cons-like track string (aligned columns)
     """
-    sequences: Dict[str, List[str]] = {}
-    ss_tracks: Dict[str, List[str]] = {}
+    sequences: dict[str, list[str]] = {}
+    ss_tracks: dict[str, list[str]] = {}
 
-    with open(path, "r") as fh:
+    with open(path) as fh:
         for raw in fh:
             line = raw.rstrip("\n")
 
@@ -107,7 +105,7 @@ def parse_stockholm_single(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
     return seqs_joined, ss_joined
 
 
-def ss_tag_order(tag: str) -> Tuple[int, int, str]:
+def ss_tag_order(tag: str) -> tuple[int, int, str]:
     """
     For ordering SS_cons, SS_cons_1, SS_cons_2, ...
     """
@@ -122,7 +120,7 @@ def ss_tag_order(tag: str) -> Tuple[int, int, str]:
     return (2, 9999, tag)
 
 
-def pairs_from_track(track: str) -> List[Tuple[int, int]]:
+def pairs_from_track(track: str) -> list[tuple[int, int]]:
     """
     Given a WUSS-like track string (for all alignment columns),
     return a list of (i, j) pairs in alignment coordinates (0-based).
@@ -130,7 +128,7 @@ def pairs_from_track(track: str) -> List[Tuple[int, int]]:
     Uses bracket types: <>, (), [], {}, and a-z.
     """
     stacks = {op: [] for op in OPEN_TO_CLOSE}
-    result: List[Tuple[int, int]] = []
+    result: list[tuple[int, int]] = []
 
     for i, ch in enumerate(track):
         if ch in OPEN_TO_CLOSE:
@@ -145,14 +143,14 @@ def pairs_from_track(track: str) -> List[Tuple[int, int]]:
     return result
 
 
-def aln_to_seq_map(aligned_seq: str) -> Tuple[Dict[int, int], int]:
+def aln_to_seq_map(aligned_seq: str) -> tuple[dict[int, int], int]:
     """
     Build a map alignment_index -> sequence_index (ungapped)
     for one sequence. Returns (aln2seq, L), where:
       - aln2seq[i] = seq_index or -1 if gap
       - L = length of ungapped sequence
     """
-    aln2seq: Dict[int, int] = {}
+    aln2seq: dict[int, int] = {}
     pos = 0
     for i, ch in enumerate(aligned_seq):
         if ch in GAP_CHARS:
@@ -164,14 +162,14 @@ def aln_to_seq_map(aligned_seq: str) -> Tuple[Dict[int, int], int]:
 
 
 def map_pairs_to_seq(
-    pairs_aln: List[Tuple[int, int]],
-    aln2seq: Dict[int, int],
-) -> List[Tuple[int, int]]:
+    pairs_aln: list[tuple[int, int]],
+    aln2seq: dict[int, int],
+) -> list[tuple[int, int]]:
     """
     Map pairs from alignment coordinates to sequence coordinates,
     dropping any that hit a gap in this sequence.
     """
-    result: List[Tuple[int, int]] = []
+    result: list[tuple[int, int]] = []
     for i, j in pairs_aln:
         si = aln2seq.get(i, -1)
         sj = aln2seq.get(j, -1)
@@ -186,6 +184,7 @@ def map_pairs_to_seq(
 
 # ------------------ Covariation stats + weights ------------------ #
 
+
 @dataclass
 class CovRecord:
     in_cacofold: bool
@@ -198,8 +197,8 @@ class CovRecord:
 
 def load_cov_stats(
     cov_path: str,
-    aln2seq: Dict[int, int],
-) -> Dict[Tuple[int, int], CovRecord]:
+    aln2seq: dict[int, int],
+) -> dict[tuple[int, int], CovRecord]:
     """
     Load a CaCoFold/R-scape .cov file and map pairs into sequence coordinates.
 
@@ -209,7 +208,7 @@ def load_cov_stats(
         (i, j) -> CovRecord
         in ungapped sequence coordinates for this sequence.
     """
-    cov: Dict[Tuple[int, int], CovRecord] = {}
+    cov: dict[tuple[int, int], CovRecord] = {}
 
     with open(cov_path) as fh:
         for line in fh:
@@ -297,19 +296,20 @@ def cov_weight(rec: CovRecord, mode: str = "logE_power") -> float:
 
 # ------------------ Candidate pairs + weights ------------------ #
 
+
 def extract_candidate_pairs(
     seq_name: str,
-    seqs: Dict[str, str],
-    ss_tracks: Dict[str, str],
+    seqs: dict[str, str],
+    ss_tracks: dict[str, str],
     w_core: float = 2.0,
     w_alt: float = 1.0,
-    cov: Optional[Dict[Tuple[int, int], CovRecord]] = None,
+    cov: dict[tuple[int, int], CovRecord] | None = None,
     cov_mode: str = "off",
     cov_alpha: float = 1.0,
     cov_min_power: float = 0.0,
     cov_forbid_negative: bool = False,
     cov_negative_E: float = 1.0,
-) -> Tuple[int, List[Tuple[int, int, float]]]:
+) -> tuple[int, list[tuple[int, int, float]]]:
     """
     From SS_cons, SS_cons_1, SS_cons_2, ... build:
       - L: length of ungapped sequence
@@ -348,14 +348,14 @@ def extract_candidate_pairs(
 
     tags = sorted(tags, key=ss_tag_order)
 
-    pair_scores: Dict[Tuple[int, int], float] = {}
+    pair_scores: dict[tuple[int, int], float] = {}
     dropped_noncanonical = 0
 
     for tag in tags:
         track = ss_tracks[tag]
         pairs_aln = pairs_from_track(track)
         pairs_seq = map_pairs_to_seq(pairs_aln, aln2seq)
-        for (i, j) in pairs_seq:
+        for i, j in pairs_seq:
             if i > j:
                 i, j = j, i
 
@@ -372,7 +372,7 @@ def extract_candidate_pairs(
 
             # Optional covariation component
             cov_w = 0.0
-            rec: Optional[CovRecord] = None
+            rec: CovRecord | None = None
             if cov is not None and cov_mode != "off":
                 rec = cov.get(key)
 
@@ -403,9 +403,7 @@ def extract_candidate_pairs(
 
             pair_scores[key] = pair_scores.get(key, 0.0) + w
 
-    candidate_pairs = [
-        (i, j, w) for (i, j), w in sorted(pair_scores.items())
-    ]
+    candidate_pairs = [(i, j, w) for (i, j), w in sorted(pair_scores.items())]
     if dropped_noncanonical > 0:
         sys.stderr.write(
             f"[CaCoFoldSample] Dropped {dropped_noncanonical} "
@@ -414,13 +412,15 @@ def extract_candidate_pairs(
 
     return L, candidate_pairs
 
+
 # ------------------ Consensus projection + PK summary ----------- #
+
 
 def project_ss_cons_to_sequence(
     seq_name: str,
-    seqs: Dict[str, str],
-    ss_tracks: Dict[str, str],
-) -> Tuple[int, str, List[Tuple[int, int]]]:
+    seqs: dict[str, str],
+    ss_tracks: dict[str, str],
+) -> tuple[int, str, list[tuple[int, int]]]:
     """
     Project the primary SS_cons track onto the ungapped sequence.
 
@@ -459,7 +459,8 @@ def project_ss_cons_to_sequence(
 
 # ------------------ Pseudoknot layering + PK string -------------- #
 
-def pairs_cross(p: Tuple[int, int], q: Tuple[int, int]) -> bool:
+
+def pairs_cross(p: tuple[int, int], q: tuple[int, int]) -> bool:
     """
     Return True if arcs (i, j) and (k, l) cross (pseudoknot)
     in the standard 1D arc diagram sense.
@@ -473,13 +474,13 @@ def pairs_cross(p: Tuple[int, int], q: Tuple[int, int]) -> bool:
     return (i < k < j < l) or (k < i < l < j)
 
 
-def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+def pairs_to_layers(pairs: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
     """
     Given a list of pairs (i, j) (sequence coords, i<j),
     partition them into layers so that within each layer
     there are no crossing arcs.
     """
-    layers: List[List[Tuple[int, int]]] = []
+    layers: list[list[tuple[int, int]]] = []
 
     for p in sorted(pairs):
         placed = False
@@ -494,11 +495,10 @@ def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]
 
     return layers
 
-from typing import Dict, Set, Tuple, List
 
 def compute_pk_stats_for_set(
-    pairs: Set[Tuple[int, int]]
-) -> Tuple[Set[Tuple[int, int]], Dict[Tuple[int, int], int], int, int]:
+    pairs: set[tuple[int, int]],
+) -> tuple[set[tuple[int, int]], dict[tuple[int, int], int], int, int]:
     """
     Given a set of pairs, compute:
 
@@ -508,7 +508,7 @@ def compute_pk_stats_for_set(
       - max_cross: max #crossings over all pairs
     """
     pairs_list = sorted(pairs)
-    cross_counts: Dict[Tuple[int, int], int] = {p: 0 for p in pairs_list}
+    cross_counts: dict[tuple[int, int], int] = dict.fromkeys(pairs_list, 0)
     n = len(pairs_list)
 
     for i in range(n):
@@ -527,14 +527,14 @@ def compute_pk_stats_for_set(
 
 
 def prune_pseudoknots(
-    pair_set: Set[Tuple[int, int]],
-    pair_weights: Dict[Tuple[int, int], float],
+    pair_set: set[tuple[int, int]],
+    pair_weights: dict[tuple[int, int], float],
     L: int,
     pk_filter_frac: float,
     pk_filter_max_cross_per_pair: int,
     pk_filter_max_total_cross: int,
-    fixed_pairs: Set[Tuple[int, int]] = None,
-) -> Set[Tuple[int, int]]:
+    fixed_pairs: set[tuple[int, int]] = None,
+) -> set[tuple[int, int]]:
     """
     Given a matching (pair_set), greedily remove the "worst" pseudoknotted
     pairs until it satisfies the PK thresholds:
@@ -545,7 +545,7 @@ def prune_pseudoknots(
 
     "Worst" = highest crossing count, tie-broken by lowest weight.
     Returns a NEW set; does not modify the input set.
-    
+
     If fixed_pairs is provided, these pairs are NEVER removed, even if they
     cause violations.
     """
@@ -585,9 +585,9 @@ def prune_pseudoknots(
 
         # Filter out fixed pairs from consideration for removal
         removable_pk_pairs = [p for p in pk_pairs if p not in fixed_pairs]
-        
+
         if not removable_pk_pairs:
-            # We can't remove anything else to satisfy constraints because all 
+            # We can't remove anything else to satisfy constraints because all
             # problematic pairs are fixed. We must accept the violation.
             break
 
@@ -608,7 +608,8 @@ def prune_pseudoknots(
 
     return current
 
-def pairs_to_pk_string(pairs: List[Tuple[int, int]], L: int) -> str:
+
+def pairs_to_pk_string(pairs: list[tuple[int, int]], L: int) -> str:
     """
     Convert a set/list of pairs (i, j) into a pseudoknot-annotated string.
 
@@ -631,7 +632,7 @@ def pairs_to_pk_string(pairs: List[Tuple[int, int]], L: int) -> str:
     rosetta_brackets = [("(", ")"), ("[", "]"), ("{", "}")]
     # Add a-z for deeper layers
     for i in range(26):
-        rosetta_brackets.append((chr(ord('a')+i), chr(ord('A')+i)))
+        rosetta_brackets.append((chr(ord("a") + i), chr(ord("A") + i)))
 
     for layer_idx, layer in enumerate(layers):
         if layer_idx < len(rosetta_brackets):
@@ -640,7 +641,7 @@ def pairs_to_pk_string(pairs: List[Tuple[int, int]], L: int) -> str:
             # Fallback
             open_char, close_char = "{", "}"
 
-        for (i, j) in layer:
+        for i, j in layer:
             chars[i] = open_char
             chars[j] = close_char
 
@@ -653,7 +654,7 @@ def write_summary_file(
     ungapped_seq: str,
     L: int,
     ss_cons_str: str,
-    candidate_pairs: List[Tuple[int, int, float]],
+    candidate_pairs: list[tuple[int, int, float]],
 ) -> None:
     """
     Write a human-readable summary of:
@@ -671,34 +672,37 @@ def write_summary_file(
     try:
         pk_all = pairs_to_pk_string(unique_pairs, L)
     except ValueError:
-        pk_all = "(Cannot represent candidates as a single string due to overlapping/conflicting pairs)"
+        pk_all = (
+            "(Cannot represent candidates as a single string due to overlapping/conflicting pairs)"
+        )
 
     # Per-layer strings
     layers = pairs_to_layers(unique_pairs)
 
-    def layer_string(layer_idx: int, layer_pairs: List[Tuple[int, int]]) -> str:
+    def layer_string(layer_idx: int, layer_pairs: list[tuple[int, int]]) -> str:
         chars = ["."] * L
-        
+
         # Check for overlaps within this layer and PRUNE them for display
         # instead of erroring out.
         clean_pairs = []
         occupied = set()
-        
+
         # Sort pairs (e.g. by first index) to be deterministic
         for p in sorted(layer_pairs):
             i, j = p
-            if i > j: i, j = j, i
-            
+            if i > j:
+                i, j = j, i
+
             if i not in occupied and j not in occupied:
                 occupied.add(i)
                 occupied.add(j)
                 clean_pairs.append((i, j))
-        
+
         op, cl = "(", ")"
-        for (i, j) in clean_pairs:
+        for i, j in clean_pairs:
             chars[i] = op
             chars[j] = cl
-            
+
         return "".join(chars)
 
     with open(summary_path, "w") as fh:
@@ -718,15 +722,17 @@ def write_summary_file(
             fh.write(f">pk_layer_{idx}\n")
             fh.write(layer_string(idx, layer) + "\n")
 
+
 # ------------------ Metropolis sampler on matchings -------------- #
+
 
 def sample_matchings(
     L: int,
-    candidate_pairs: List[Tuple[int, int, float]],
+    candidate_pairs: list[tuple[int, int, float]],
     n_samples: int,
     burn_in: int = 1000,
     thin: int = 10,
-    min_loop_sep: int = 1,    # minimum unpaired residues inside a hairpin
+    min_loop_sep: int = 1,  # minimum unpaired residues inside a hairpin
     beta: float = 1.0,
     seed: int | None = None,
     pk_alpha: float = 2.0,
@@ -734,8 +740,8 @@ def sample_matchings(
     pk_filter_max_cross_per_pair: int = 2,
     pk_filter_max_total_cross: int = 30,
     pk_depth_limit: int | None = None,
-    scaffold_pairs: Set[Tuple[int, int]] | None = None,
-) -> List[Set[Tuple[int, int]]]:
+    scaffold_pairs: set[tuple[int, int]] | None = None,
+) -> list[set[tuple[int, int]]]:
     """
     Metropolis sampler over matchings (sets of non-overlapping base pairs).
 
@@ -743,52 +749,59 @@ def sample_matchings(
                     These pairs are fixed and cannot be removed.
                     Sampling only explores adding/removing *other* candidates.
 
-    pk_depth_limit: If None, no limit. 
+    pk_depth_limit: If None, no limit.
                     If set, we interpret it as allowing this many *additional*
                     crossing layers on top of the scaffold's inherent complexity.
                     Effective Limit = Scaffold Layers + 1.
     """
     if seed is not None:
         random.seed(seed)
-    
+
     # Initialize state with scaffold
-    pair_set: Set[Tuple[int, int]] = set()
+    pair_set: set[tuple[int, int]] = set()
     partners = [-1] * L
-    
+
     fixed_pairs = set()
     if scaffold_pairs:
-        for (i, j) in scaffold_pairs:
-            if i > j: i, j = j, i
+        for i, j in scaffold_pairs:
+            if i > j:
+                i, j = j, i
             fixed_pairs.add((i, j))
             pair_set.add((i, j))
             partners[i] = j
             partners[j] = i
 
+    M = len(candidate_pairs)
+
+    # If there are no candidate pairs to sample from, simply return the scaffold.
+    if M == 0:
+        current_solution = set(fixed_pairs) if fixed_pairs else set()
+        return [current_solution for _ in range(n_samples)]
+
     # Determine dynamic depth limit based on scaffold
     # If scaffold has N layers, we allow N + 1 layers total.
     effective_depth_limit = 9999
-    if pk_depth_limit is not None or True: # Force logic: allow 1 extra layer
+    if pk_depth_limit is not None or True:  # Force logic: allow 1 extra layer
         # Calculate scaffold layers
         if not fixed_pairs:
             scaffold_layers = 0
         else:
             scaffold_layers = len(pairs_to_layers(list(fixed_pairs)))
-        
+
         # We allow 1 extra layer on top of the scaffold
         # So total layers allowed = scaffold_layers + 1
         effective_depth_limit = scaffold_layers + 1
 
-    M = len(candidate_pairs)
-    score = 0.0 # Score of *variable* pairs (delta)
+    score = 0.0  # Score of *variable* pairs (delta)
 
     # Precompute weight lookup for pruning
-    pair_weights: Dict[Tuple[int, int], float] = {}
+    pair_weights: dict[tuple[int, int], float] = {}
     for i, j, w in candidate_pairs:
         if i > j:
             i, j = j, i
         pair_weights[(i, j)] = w
 
-    samples: List[Set[Tuple[int, int]]] = []
+    samples: list[set[tuple[int, int]]] = []
     total_steps = burn_in + n_samples * thin
 
     for step in range(total_steps):
@@ -803,7 +816,7 @@ def sample_matchings(
             continue
 
         pair = (i, j)
-        
+
         # If pair is fixed (scaffold), we cannot toggle it.
         if pair in fixed_pairs:
             continue
@@ -881,6 +894,7 @@ def sample_matchings(
 
 
 # ------------------ CLI ------------------------------------------ #
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -1009,7 +1023,7 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--pk-filter-max-cross-per-pair",
+        "--pk-filter-max-cross_per_pair",
         type=int,
         default=2,
         help=(
@@ -1054,7 +1068,7 @@ def main() -> None:
     aligned_seq = seqs[args.seq]
     aln2seq, _L_aln = aln_to_seq_map(aligned_seq)
 
-    cov_dict: Optional[Dict[Tuple[int, int], CovRecord]] = None
+    cov_dict: dict[tuple[int, int], CovRecord] | None = None
     if args.cov_file is not None and args.cov_mode != "off":
         try:
             cov_dict = load_cov_stats(args.cov_file, aln2seq)
@@ -1096,9 +1110,7 @@ def main() -> None:
 
     # Project the primary SS_cons track for the consensus secondary structure
     try:
-        L_cons, ss_cons_str, _cons_pairs = project_ss_cons_to_sequence(
-            args.seq, seqs, ss_tracks
-        )
+        L_cons, ss_cons_str, _cons_pairs = project_ss_cons_to_sequence(args.seq, seqs, ss_tracks)
         if L_cons != L:
             sys.stderr.write(
                 f"[WARN] Ungapped length from SS_cons ({L_cons}) != "
@@ -1148,8 +1160,7 @@ def main() -> None:
             out_f.write(pk + "\n")
 
     sys.stderr.write(
-        f"[INFO] Wrote {len(samples)} structures to {args.out_db} "
-        f"(requested {args.n_samples}).\n"
+        f"[INFO] Wrote {len(samples)} structures to {args.out_db} (requested {args.n_samples}).\n"
     )
 
 
