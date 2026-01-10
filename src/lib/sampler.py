@@ -175,8 +175,115 @@ def sample_matchings_new(
     Returns:
         Tuple of (samples, diagnostics)
     """
-    # Placeholder implementation - will be filled in Phase 2
-    raise NotImplementedError("sample_matchings_new not yet implemented")
+    import math
+    import random
+
+    from .energy import compute_delta_energy, compute_energy
+    from .moves import propose_toggle
+    from .sampler_state import create_initial_state
+
+    if scaffold_pairs is None:
+        scaffold_pairs = set()
+
+    # Build weight dictionary
+    weights: dict[tuple[int, int], float] = {}
+    for i, j, w in candidate_pairs:
+        if i > j:
+            i, j = j, i
+        weights[(i, j)] = w
+
+    # Initialize RNG
+    rng = random.Random(config.seed)
+
+    # Create initial state
+    state = create_initial_state(
+        length=length,
+        fixed_pairs=scaffold_pairs,
+        weights=weights,
+        params=config.energy_params,
+    )
+
+    # Compute initial energy
+    energy, cache = compute_energy(state.pair_set, weights, config.energy_params, state.partners)
+    state.energy_cache = cache
+    assert cache.pk_cache is not None  # compute_energy always sets pk_cache
+    state.pk_cache = cache.pk_cache
+
+    # Diagnostics
+    diagnostics = SamplerDiagnostics()
+
+    # Calculate total steps
+    total_steps = config.burn_in + config.n_samples * config.thin
+    samples: list[set[tuple[int, int]]] = []
+
+    for step in range(total_steps):
+        # For now, only toggle moves (Phase 2)
+        move = propose_toggle(
+            matching=state.pair_set,
+            partners=state.partners,
+            candidate_pairs=candidate_pairs,
+            fixed_pairs=state.fixed_pairs,
+            weights=weights,
+            rng=rng,
+            min_hairpin=config.min_hairpin,
+        )
+
+        accepted = False
+
+        if move.is_valid:
+            # Compute delta energy
+            if move.pairs_added:
+                edge = next(iter(move.pairs_added))
+                delta_e, new_cache = compute_delta_energy(
+                    edge,
+                    state.pair_set,
+                    weights,
+                    config.energy_params,
+                    state.energy_cache,
+                    is_add=True,
+                )
+            elif move.pairs_removed:
+                edge = next(iter(move.pairs_removed))
+                delta_e, new_cache = compute_delta_energy(
+                    edge,
+                    state.pair_set,
+                    weights,
+                    config.energy_params,
+                    state.energy_cache,
+                    is_add=False,
+                )
+            else:
+                delta_e, new_cache = 0.0, state.energy_cache
+
+            # Metropolis-Hastings acceptance
+            # A = min(1, exp(-beta * delta_E) * hastings_ratio)
+            log_accept = -config.energy_params.beta * delta_e
+            log_accept += (
+                math.log(move.hastings_ratio) if move.hastings_ratio > 0 else float("-inf")
+            )
+
+            if log_accept >= 0 or rng.random() < math.exp(log_accept):
+                accepted = True
+                # Apply the move
+                if move.pairs_added:
+                    for i, j in move.pairs_added:
+                        state.add_pair(i, j)
+                if move.pairs_removed:
+                    for i, j in move.pairs_removed:
+                        state.remove_pair(i, j)
+                state.energy_cache = new_cache
+                assert new_cache.pk_cache is not None  # compute_delta_energy always sets pk_cache
+                state.pk_cache = new_cache.pk_cache
+                energy = new_cache.total_energy
+
+        diagnostics.record_move(move.move_type, accepted)
+
+        # Collect sample after burn-in at thinning interval
+        if step >= config.burn_in and (step - config.burn_in) % config.thin == 0:
+            diagnostics.record_state(energy, len(state.pair_set))
+            samples.append(set(state.pair_set))
+
+    return samples, diagnostics
 
 
 def enumerate_all_matchings(
@@ -198,8 +305,57 @@ def enumerate_all_matchings(
     Returns:
         List of all valid matchings as frozen sets
     """
-    # Placeholder implementation - will be filled in Phase 2
-    raise NotImplementedError("enumerate_all_matchings not yet implemented")
+    if fixed_pairs is None:
+        fixed_pairs = set()
+
+    # Normalize pairs
+    normalized_candidates = []
+    for i, j in candidate_pairs:
+        if i > j:
+            i, j = j, i
+        # Check hairpin constraint
+        if j - i - 1 >= min_hairpin:
+            normalized_candidates.append((i, j))
+
+    normalized_fixed = set()
+    for i, j in fixed_pairs:
+        if i > j:
+            i, j = j, i
+        normalized_fixed.add((i, j))
+
+    # Remove fixed pairs from candidates (they're always included)
+    optional_candidates = [p for p in normalized_candidates if p not in normalized_fixed]
+
+    # Check fixed pairs don't conflict
+    fixed_positions: set[int] = set()
+    for i, j in normalized_fixed:
+        if i in fixed_positions or j in fixed_positions:
+            # Fixed pairs conflict - no valid matchings
+            return []
+        fixed_positions.add(i)
+        fixed_positions.add(j)
+
+    # Enumerate all subsets of optional candidates
+    results: list[frozenset[tuple[int, int]]] = []
+
+    def is_valid_matching(pairs: set[tuple[int, int]]) -> bool:
+        """Check if pairs form a valid matching."""
+        positions: set[int] = set(fixed_positions)
+        for i, j in pairs:
+            if i in positions or j in positions:
+                return False
+            positions.add(i)
+            positions.add(j)
+        return True
+
+    n = len(optional_candidates)
+    for mask in range(1 << n):
+        subset = {optional_candidates[k] for k in range(n) if mask & (1 << k)}
+        if is_valid_matching(subset):
+            full_matching = normalized_fixed | subset
+            results.append(frozenset(full_matching))
+
+    return results
 
 
 def compute_exact_distribution(
@@ -217,5 +373,26 @@ def compute_exact_distribution(
     Returns:
         Dictionary mapping matching -> probability
     """
-    # Placeholder implementation - will be filled in Phase 2
-    raise NotImplementedError("compute_exact_distribution not yet implemented")
+    import math
+
+    from .energy import compute_energy
+
+    if not matchings:
+        return {}
+
+    # Compute energy for each matching
+    energies: dict[frozenset[tuple[int, int]], float] = {}
+    for matching in matchings:
+        energy, _ = compute_energy(set(matching), weights, params)
+        energies[matching] = energy
+
+    # Compute Boltzmann weights: exp(-beta * E)
+    # Use log-sum-exp trick for numerical stability
+    min_energy = min(energies.values())
+    boltzmann_weights: dict[frozenset[tuple[int, int]], float] = {}
+    for matching, energy in energies.items():
+        boltzmann_weights[matching] = math.exp(-params.beta * (energy - min_energy))
+
+    # Normalize
+    total = sum(boltzmann_weights.values())
+    return {m: w / total for m, w in boltzmann_weights.items()}

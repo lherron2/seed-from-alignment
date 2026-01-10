@@ -91,8 +91,67 @@ def propose_toggle(
     Returns:
         MoveResult with proposal details
     """
-    # Placeholder implementation - will be filled in Phase 2
-    raise NotImplementedError("propose_toggle not yet implemented")
+    if not candidate_pairs:
+        return MoveResult(
+            accepted=False,
+            move_type=MoveType.TOGGLE,
+            is_valid=False,
+        )
+
+    # Uniform random selection from candidates
+    idx = rng.randint(0, len(candidate_pairs) - 1)
+    i, j, _ = candidate_pairs[idx]
+
+    # Normalize pair
+    if i > j:
+        i, j = j, i
+    edge = (i, j)
+
+    if edge in matching:
+        # Propose removal
+        if edge in fixed_pairs:
+            # Cannot remove fixed pairs
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                pairs_removed=None,
+                is_valid=False,
+            )
+        return MoveResult(
+            accepted=False,  # Will be set by sampler after M-H test
+            move_type=MoveType.TOGGLE,
+            pairs_removed={edge},
+            pairs_added=None,
+            hastings_ratio=1.0,  # Symmetric move
+            is_valid=True,
+        )
+    else:
+        # Propose addition
+        # Check if both positions are unpaired
+        if partners[i] != -1 or partners[j] != -1:
+            # Conflict - one position already paired
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                is_valid=False,
+            )
+
+        # Check hairpin constraint
+        if j - i - 1 < min_hairpin:
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                is_valid=False,
+            )
+
+        return MoveResult(
+            accepted=False,  # Will be set by sampler after M-H test
+            move_type=MoveType.TOGGLE,
+            pairs_added={edge},
+            pairs_removed=None,
+            hastings_ratio=1.0,  # Symmetric move
+            is_valid=True,
+        )
 
 
 def propose_segment_birth_death(

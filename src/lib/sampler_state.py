@@ -184,7 +184,7 @@ def create_initial_state(
 
     return SamplerState(
         length=length,
-        pair_set=normalized_fixed,
+        pair_set=set(normalized_fixed),  # Copy to avoid aliasing
         partners=partners,
         energy_cache=energy_cache,
         pk_cache=pk_cache,
