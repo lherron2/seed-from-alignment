@@ -179,7 +179,7 @@ def sample_matchings_new(
     import random
 
     from .energy import compute_delta_energy, compute_energy
-    from .moves import propose_toggle
+    from .moves import select_and_propose_move
     from .sampler_state import create_initial_state
 
     if scaffold_pairs is None:
@@ -217,43 +217,61 @@ def sample_matchings_new(
     samples: list[set[tuple[int, int]]] = []
 
     for step in range(total_steps):
-        # For now, only toggle moves (Phase 2)
-        move = propose_toggle(
+        # Use select_and_propose_move to select from available move types
+        move = select_and_propose_move(
             matching=state.pair_set,
             partners=state.partners,
             candidate_pairs=candidate_pairs,
+            segment_index=segment_index,
+            loop_folds=loop_folds,
             fixed_pairs=state.fixed_pairs,
             weights=weights,
             rng=rng,
+            move_probs=config.move_probs,
             min_hairpin=config.min_hairpin,
         )
 
         accepted = False
 
         if move.is_valid:
-            # Compute delta energy
+            # Compute delta energy for all pairs in the move
+            delta_e = 0.0
+            current_cache = state.energy_cache
+            temp_matching = set(state.pair_set)
+
+            # Process removed pairs first
+            if move.pairs_removed:
+                for edge in move.pairs_removed:
+                    i, j = edge
+                    if i > j:
+                        i, j = j, i
+                    edge_delta, current_cache = compute_delta_energy(
+                        (i, j),
+                        temp_matching,
+                        weights,
+                        config.energy_params,
+                        current_cache,
+                        is_add=False,
+                    )
+                    delta_e += edge_delta
+                    temp_matching.discard((i, j))
+
+            # Then process added pairs
             if move.pairs_added:
-                edge = next(iter(move.pairs_added))
-                delta_e, new_cache = compute_delta_energy(
-                    edge,
-                    state.pair_set,
-                    weights,
-                    config.energy_params,
-                    state.energy_cache,
-                    is_add=True,
-                )
-            elif move.pairs_removed:
-                edge = next(iter(move.pairs_removed))
-                delta_e, new_cache = compute_delta_energy(
-                    edge,
-                    state.pair_set,
-                    weights,
-                    config.energy_params,
-                    state.energy_cache,
-                    is_add=False,
-                )
-            else:
-                delta_e, new_cache = 0.0, state.energy_cache
+                for edge in move.pairs_added:
+                    i, j = edge
+                    if i > j:
+                        i, j = j, i
+                    edge_delta, current_cache = compute_delta_energy(
+                        (i, j),
+                        temp_matching,
+                        weights,
+                        config.energy_params,
+                        current_cache,
+                        is_add=True,
+                    )
+                    delta_e += edge_delta
+                    temp_matching.add((i, j))
 
             # Metropolis-Hastings acceptance
             # A = min(1, exp(-beta * delta_E) * hastings_ratio)
@@ -265,16 +283,16 @@ def sample_matchings_new(
             if log_accept >= 0 or rng.random() < math.exp(log_accept):
                 accepted = True
                 # Apply the move
-                if move.pairs_added:
-                    for i, j in move.pairs_added:
-                        state.add_pair(i, j)
                 if move.pairs_removed:
                     for i, j in move.pairs_removed:
                         state.remove_pair(i, j)
-                state.energy_cache = new_cache
-                assert new_cache.pk_cache is not None  # compute_delta_energy always sets pk_cache
-                state.pk_cache = new_cache.pk_cache
-                energy = new_cache.total_energy
+                if move.pairs_added:
+                    for i, j in move.pairs_added:
+                        state.add_pair(i, j)
+                state.energy_cache = current_cache
+                assert current_cache.pk_cache is not None
+                state.pk_cache = current_cache.pk_cache
+                energy = current_cache.total_energy
 
         diagnostics.record_move(move.move_type, accepted)
 
