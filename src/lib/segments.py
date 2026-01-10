@@ -111,6 +111,9 @@ def build_candidate_segments(
 ) -> SegmentIndex:
     """Build index of candidate segments from candidate pairs.
 
+    A segment is a contiguous helix: [(i, j), (i+1, j-1), ...].
+    We find all maximal segments where each consecutive pair stacks.
+
     Args:
         candidate_pairs: List or set of candidate (i, j) pairs
         min_len: Minimum segment length
@@ -119,8 +122,109 @@ def build_candidate_segments(
     Returns:
         SegmentIndex with all candidate segments
     """
-    # Placeholder implementation - will be filled in Phase 3
-    raise NotImplementedError("build_candidate_segments not yet implemented")
+    # Normalize pairs to (i, j) with i < j
+    pairs_set: set[tuple[int, int]] = set()
+    for pair in candidate_pairs:
+        i, j = pair[0], pair[1]
+        if i > j:
+            i, j = j, i
+        pairs_set.add((i, j))
+
+    if not pairs_set:
+        return SegmentIndex()
+
+    # Find connected components under stacking relation
+    # Two pairs (i, j) and (i', j') stack if i' = i+1 and j' = j-1
+    visited: set[tuple[int, int]] = set()
+    segments: set[Segment] = set()
+    segment_by_pair: dict[tuple[int, int], set[Segment]] = {}
+
+    # Build stacking adjacency for efficient lookup
+    stacking_neighbors: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for i, j in pairs_set:
+        neighbors = []
+        inner = (i + 1, j - 1)
+        outer = (i - 1, j + 1)
+        if inner in pairs_set:
+            neighbors.append(inner)
+        if outer in pairs_set:
+            neighbors.append(outer)
+        stacking_neighbors[(i, j)] = neighbors
+
+    # Find all maximal contiguous chains (segments)
+    for start_pair in pairs_set:
+        if start_pair in visited:
+            continue
+
+        # BFS/DFS to find all connected pairs under stacking
+        chain: list[tuple[int, int]] = []
+        stack = [start_pair]
+        while stack:
+            curr = stack.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            chain.append(curr)
+            for neighbor in stacking_neighbors.get(curr, []):
+                if neighbor not in visited:
+                    stack.append(neighbor)
+
+        # Sort chain by 5' position to get ordered segment
+        chain.sort(key=lambda p: p[0])
+
+        # The chain is a maximal stacking chain
+        # Create segments of various lengths from this chain
+        chain_len = len(chain)
+        if chain_len >= min_len:
+            # For each starting position and valid length, create a segment
+            for start_idx in range(chain_len):
+                for seg_len in range(min_len, min(max_len + 1, chain_len - start_idx + 1)):
+                    if start_idx + seg_len > chain_len:
+                        break
+                    # Verify the pairs are truly consecutive stacking
+                    valid = True
+                    for k in range(seg_len - 1):
+                        p1 = chain[start_idx + k]
+                        p2 = chain[start_idx + k + 1]
+                        if p2[0] != p1[0] + 1 or p2[1] != p1[1] - 1:
+                            valid = False
+                            break
+                    if valid:
+                        first_pair = chain[start_idx]
+                        seg = Segment(
+                            start5=first_pair[0],
+                            start3=first_pair[1],
+                            length=seg_len,
+                        )
+                        segments.add(seg)
+
+    # Build segment_by_pair mapping
+    for seg in segments:
+        for pair in seg.pairs():
+            if pair not in segment_by_pair:
+                segment_by_pair[pair] = set()
+            segment_by_pair[pair].add(seg)
+
+    # Build conflict graph
+    conflicts: dict[Segment, set[Segment]] = {seg: set() for seg in segments}
+    segment_list = list(segments)
+    for i, seg1 in enumerate(segment_list):
+        for seg2 in segment_list[i + 1 :]:
+            if segments_conflict(seg1, seg2):
+                conflicts[seg1].add(seg2)
+                conflicts[seg2].add(seg1)
+
+    # Determine max length for sequence length field
+    max_pos = 0
+    for i, j in pairs_set:
+        max_pos = max(max_pos, i, j)
+
+    return SegmentIndex(
+        all_segments=segments,
+        segment_by_pair=segment_by_pair,
+        conflicts=conflicts,
+        length=max_pos + 1,
+    )
 
 
 def segments_conflict(seg1: Segment, seg2: Segment) -> bool:
@@ -151,14 +255,20 @@ def identify_segments_in_matching(
     Returns:
         Set of complete segments in the matching
     """
-    # Placeholder implementation - will be filled in Phase 3
-    raise NotImplementedError("identify_segments_in_matching not yet implemented")
+    result: set[Segment] = set()
+    for seg in index.all_segments:
+        # Check if all pairs of the segment are in the matching
+        seg_pairs = seg.pairs()
+        if all((i, j) in matching for i, j in seg_pairs):
+            result.add(seg)
+    return result
 
 
 def find_addable_segments(
     matching: set[tuple[int, int]],
     partners: list[int],
     index: SegmentIndex,
+    min_hairpin: int = 3,
 ) -> list[Segment]:
     """Find segments that can be added to the current matching.
 
@@ -170,12 +280,33 @@ def find_addable_segments(
         matching: Current set of base pairs
         partners: Partners array (partners[i] = j if paired, -1 if unpaired)
         index: Precomputed segment index
+        min_hairpin: Minimum hairpin loop size
 
     Returns:
         List of addable segments
     """
-    # Placeholder implementation - will be filled in Phase 3
-    raise NotImplementedError("find_addable_segments not yet implemented")
+    result: list[Segment] = []
+    for seg in index.all_segments:
+        # Check if the segment is already in the matching
+        seg_pairs = seg.pairs()
+        if any((i, j) in matching for i, j in seg_pairs):
+            continue
+
+        # Check if all positions are free
+        can_add = True
+        for i, j in seg_pairs:
+            if partners[i] != -1 or partners[j] != -1:
+                can_add = False
+                break
+            # Check hairpin constraint
+            if j - i - 1 < min_hairpin:
+                can_add = False
+                break
+
+        if can_add:
+            result.append(seg)
+
+    return result
 
 
 def find_removable_segments(
@@ -197,5 +328,21 @@ def find_removable_segments(
     Returns:
         List of removable segments
     """
-    # Placeholder implementation - will be filled in Phase 3
-    raise NotImplementedError("find_removable_segments not yet implemented")
+    if fixed_pairs is None:
+        fixed_pairs = set()
+
+    result: list[Segment] = []
+    for seg in index.all_segments:
+        seg_pairs = seg.pairs()
+
+        # Check if all pairs are in matching
+        if not all((i, j) in matching for i, j in seg_pairs):
+            continue
+
+        # Check if none of the pairs are fixed
+        if any((i, j) in fixed_pairs for i, j in seg_pairs):
+            continue
+
+        result.append(seg)
+
+    return result
