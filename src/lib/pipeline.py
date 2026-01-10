@@ -122,7 +122,7 @@ def load_pipeline_config(path: Path) -> PipelineConfig:
 
     if path.suffix in {".yaml", ".yml"}:
         try:
-            import yaml  # type: ignore
+            import yaml  # type: ignore[import-untyped]
         except ImportError as e:
             raise SystemExit("PyYAML is required for YAML configs.") from e
         raw = yaml.safe_load(text)

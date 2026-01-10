@@ -9,10 +9,16 @@ Output .db format:
 """
 
 import argparse
+import json
 import math
 import random
 import sys
 from dataclasses import dataclass
+
+from .energy import EnergyParams
+from .moves import MoveType
+from .sampler import SamplerConfig, sample_matchings_new
+from .segments import build_candidate_segments
 
 # Alignment gaps
 GAP_CHARS = set("-._~")
@@ -893,6 +899,122 @@ def sample_matchings(
     return samples
 
 
+def sample_matchings_modular(
+    L: int,
+    candidate_pairs: list[tuple[int, int, float]],
+    n_samples: int,
+    burn_in: int = 1000,
+    thin: int = 10,
+    min_hairpin: int = 3,
+    beta: float = 1.0,
+    seed: int | None = None,
+    pk_alpha: float = 2.0,
+    pk_gamma: float = 0.0,
+    lonely_penalty: float = 0.0,
+    scaffold_pairs: set[tuple[int, int]] | None = None,
+    use_segment_moves: bool = True,
+    segment_birth_prob: float = 0.2,
+    segment_death_prob: float = 0.2,
+    segment_swap_prob: float = 0.1,
+    diagnostics_file: str | None = None,
+) -> list[set[tuple[int, int]]]:
+    """
+    Sample matchings using the new modular MCMC sampler.
+
+    This uses the refactored sampler with:
+    - Proper delta energy computation with incremental cache updates
+    - Segment moves (birth/death/swap) for better mixing
+    - Guaranteed detailed balance through Hastings ratios
+    - Optional diagnostics output
+
+    Args:
+        L: Sequence length
+        candidate_pairs: List of (i, j, weight) candidates
+        n_samples: Number of samples to collect
+        burn_in: Number of burn-in steps
+        thin: Thinning interval
+        min_hairpin: Minimum hairpin loop size
+        beta: Inverse temperature
+        seed: Random seed
+        pk_alpha: Pseudoknot penalty per crossing pair
+        pk_gamma: Pseudoknot penalty for max crossings
+        lonely_penalty: Penalty for isolated base pairs
+        scaffold_pairs: Fixed pairs that must be in every sample
+        use_segment_moves: Whether to enable segment moves
+        segment_birth_prob: Probability of segment birth move
+        segment_death_prob: Probability of segment death move
+        segment_swap_prob: Probability of segment swap move
+        diagnostics_file: Optional path to write diagnostics JSON
+
+    Returns:
+        List of sampled matchings
+    """
+    # Build energy parameters
+    energy_params = EnergyParams(
+        beta=beta,
+        pk_alpha=pk_alpha,
+        pk_gamma=pk_gamma,
+        lonely_penalty=lonely_penalty,
+    )
+
+    # Build move probabilities
+    toggle_prob = 1.0 - segment_birth_prob - segment_death_prob - segment_swap_prob
+    move_probs: dict[MoveType, float] | None = None
+
+    if use_segment_moves:
+        move_probs = {
+            MoveType.TOGGLE: max(0.0, toggle_prob),
+            MoveType.SEGMENT_BIRTH: segment_birth_prob,
+            MoveType.SEGMENT_DEATH: segment_death_prob,
+            MoveType.SEGMENT_SWAP: segment_swap_prob,
+        }
+
+    # Build sampler config
+    config = SamplerConfig(
+        n_samples=n_samples,
+        burn_in=burn_in,
+        thin=thin,
+        seed=seed,
+        energy_params=energy_params,
+        move_probs=move_probs,
+        min_hairpin=min_hairpin,
+    )
+
+    # Build segment index if using segment moves
+    segment_index = None
+    if use_segment_moves:
+        all_pairs = [(i, j) for i, j, _ in candidate_pairs]
+        segment_index = build_candidate_segments(all_pairs, min_len=2, max_len=10)
+
+    # Run sampler
+    samples, diagnostics = sample_matchings_new(
+        length=L,
+        candidate_pairs=candidate_pairs,
+        config=config,
+        scaffold_pairs=scaffold_pairs,
+        segment_index=segment_index,
+    )
+
+    # Write diagnostics if requested
+    if diagnostics_file:
+        summary = diagnostics.summary()
+        # Add move-by-move acceptance rates
+        summary["move_details"] = {
+            mt.name: {
+                "proposals": diagnostics.total_proposals.get(mt, 0),
+                "accepted": diagnostics.accepted.get(mt, 0),
+                "rate": diagnostics.acceptance_rate(mt),
+            }
+            for mt in MoveType
+            if diagnostics.total_proposals.get(mt, 0) > 0
+        }
+        with open(diagnostics_file, "w") as f:
+            json.dump(summary, f, indent=2)
+        sys.stderr.write(f"[INFO] Wrote diagnostics to {diagnostics_file}\n")
+
+    return samples
+
+
 # ------------------ CLI ------------------------------------------ #
 
 
@@ -1046,6 +1168,55 @@ def main() -> None:
         default=None,
         help="Limit the pseudoknot depth during sampling (e.g. 1 = 1 crossing layer).",
     )
+    # ---- New modular sampler options ----
+    parser.add_argument(
+        "--use-new-sampler",
+        action="store_true",
+        help=(
+            "Use the new modular MCMC sampler with proper delta energy computation, "
+            "segment moves for better mixing, and guaranteed detailed balance."
+        ),
+    )
+    parser.add_argument(
+        "--pk-gamma",
+        type=float,
+        default=0.0,
+        help="Pseudoknot penalty based on max crossings per pair (new sampler only).",
+    )
+    parser.add_argument(
+        "--lonely-penalty",
+        type=float,
+        default=0.0,
+        help="Penalty for isolated (lonely) base pairs (new sampler only).",
+    )
+    parser.add_argument(
+        "--no-segment-moves",
+        action="store_true",
+        help="Disable segment birth/death/swap moves (new sampler only).",
+    )
+    parser.add_argument(
+        "--segment-birth-prob",
+        type=float,
+        default=0.2,
+        help="Probability of segment birth move (new sampler only, default: 0.2).",
+    )
+    parser.add_argument(
+        "--segment-death-prob",
+        type=float,
+        default=0.2,
+        help="Probability of segment death move (new sampler only, default: 0.2).",
+    )
+    parser.add_argument(
+        "--segment-swap-prob",
+        type=float,
+        default=0.1,
+        help="Probability of segment swap move (new sampler only, default: 0.1).",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        default=None,
+        help="Path to write sampler diagnostics JSON (new sampler only).",
+    )
 
     args = parser.parse_args()
 
@@ -1133,22 +1304,43 @@ def main() -> None:
         sys.stderr.write(f"[INFO] Wrote CaCoFold summary to {args.summary}\n")
 
     # Sample structures
-    samples = sample_matchings(
-        L=L,
-        candidate_pairs=candidate_pairs,
-        n_samples=args.n_samples,
-        burn_in=args.burn_in,
-        thin=args.thin,
-        min_loop_sep=args.min_loop_sep,
-        beta=args.beta,
-        seed=args.seed,
-        pk_alpha=args.pk_alpha,
-        pk_filter_frac=args.pk_filter_frac,
-        pk_filter_max_cross_per_pair=args.pk_filter_max_cross_per_pair,
-        pk_filter_max_total_cross=args.pk_filter_max_total_cross,
-        pk_depth_limit=args.pk_depth_limit,
-        # scaffold_pairs argument is not exposed in CLI directly but used by pipeline code calling `sample_matchings`
-    )
+    if args.use_new_sampler:
+        sys.stderr.write("[INFO] Using new modular MCMC sampler\n")
+        samples = sample_matchings_modular(
+            L=L,
+            candidate_pairs=candidate_pairs,
+            n_samples=args.n_samples,
+            burn_in=args.burn_in,
+            thin=args.thin,
+            min_hairpin=args.min_loop_sep,
+            beta=args.beta,
+            seed=args.seed,
+            pk_alpha=args.pk_alpha,
+            pk_gamma=args.pk_gamma,
+            lonely_penalty=args.lonely_penalty,
+            use_segment_moves=not args.no_segment_moves,
+            segment_birth_prob=args.segment_birth_prob,
+            segment_death_prob=args.segment_death_prob,
+            segment_swap_prob=args.segment_swap_prob,
+            diagnostics_file=args.diagnostics,
+        )
+    else:
+        samples = sample_matchings(
+            L=L,
+            candidate_pairs=candidate_pairs,
+            n_samples=args.n_samples,
+            burn_in=args.burn_in,
+            thin=args.thin,
+            min_loop_sep=args.min_loop_sep,
+            beta=args.beta,
+            seed=args.seed,
+            pk_alpha=args.pk_alpha,
+            pk_filter_frac=args.pk_filter_frac,
+            pk_filter_max_cross_per_pair=args.pk_filter_max_cross_per_pair,
+            pk_filter_max_total_cross=args.pk_filter_max_total_cross,
+            pk_depth_limit=args.pk_depth_limit,
+            # scaffold_pairs argument is not exposed in CLI directly but used by pipeline code calling `sample_matchings`
+        )
 
     # Write to .db file:
     #   line 1: sequence
