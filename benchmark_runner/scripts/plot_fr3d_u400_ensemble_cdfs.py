@@ -152,7 +152,6 @@ def main() -> None:
         ax.legend(loc="lower right", frameon=True, fontsize=9)
         fig.tight_layout()
         fig.savefig(out_dir / f"{out_name}.pdf")
-        fig.savefig(out_dir / f"{out_name}.png")
         plt.close(fig)
 
     plot("Top-1 (F1@1)", "f1", "cdf_top1")

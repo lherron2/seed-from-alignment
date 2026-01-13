@@ -125,6 +125,13 @@ AUDIT.md
 CLAUDE_CODE_STATUS.md
 PATCH_PLAN.md
 fr3d_benchmark.*
+*.docx.pdf
+
+# Matplotlib cache (used by Python plotting scripts)
+.mplconfig/
+
+# Generated plot rasters (PDF is the canonical artifact)
+docs/**/generated/*.png
 
 # Example outputs / scratch
 example/**/*.ct
