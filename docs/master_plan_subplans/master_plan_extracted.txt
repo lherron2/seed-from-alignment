@@ -1,0 +1,400 @@
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Master Timeline: January – June 2026 
+
+Coordinating PhD Defense, MII Deliverables, and Emergente Launch 
+
+Executive Summary 
+
+This document orchestrates work across six parallel workstreams for the next six months. The 
+plan prioritizes deadline-driven commitments (MII grant) first, then activities that unlock 
+fundraising and partnerships (cloud product and validation case studies), while maintaining a 
+realistic workload with few parallel major initiatives at any given time. 
+
+Critical Dates: 
+
+Feb 16–20: MII Mid-term Presentation 
+Feb 24–28 or Mar 3–7: PhD Thesis Defense (Target Window) 
+Mar 15–Apr 15: EclipseBio eSHAPE Data Expected 
+June 30: MII Final Report Due 
+
+ 
+
+Page 1  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Visual Timeline (Gantt Chart) 
+
+The chart below shows the timing and overlap of all major workstreams. Each row represents a 
+workstream or sub-task, with colored bars indicating active periods. 
+
+Workstream 
+January 
+February 
+March 
+April 
+May 
+June 
+
+Week # 
+1 
+2 
+3 
+4 
+5 
+6 
+7 
+8 
+9 
+10 
+11 
+12 
+13 
+14 
+15 
+16 
+17 
+18 
+19 
+20 
+21 
+22 
+23 
+24 
+
+MII Grant 
+
+Mid-term Prep 
+
+eSHAPE 
+Benchmark 
+
+Final Report 
+
+RNAnneal Free 
+Tier 
+
+MVP Build 
+
+Soft Launch 
+
+Scale & Polish 
+
+Validation 
+Studies 
+
+Case Study 
+Selection 
+
+Analysis & Plots 
+
+  Documentation 
+
+Fundraising 
+
+Materials Prep 
+
+Partner Outreach 
+
+PhD Thesis 
+
+Preprint 
+Submission 
+
+Committee 
+Outreach 
+
+Defense (Target) 
+
+ARPA-H 
+(Contingency) 
+
+Legend: 
+
+■ MII Grant 
+■ Free Tier 
+■ Validation 
+■ Fundraising 
+■ PhD 
+Thesis 
+
+■ ARPA-H 
+
+ 
+
+Page 2  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Contradictions Identified & Resolved 
+
+During the review of planning documents and journal notes, the following inconsistencies were 
+identified and resolved: 
+
+1. PhD Defense Timeline 
+
+Contradiction: The master plan document states "PhD Thesis (Q2 2026 defense target)" which 
+implies April–June. However, journal notes from January 7, 2026 state: "Goal is to schedule the 
+defense for the last week of February or the first week of March." 
+
+Resolution: Adopting the more recent and specific target from journal notes. The defense 
+window is now targeted for February 24–28 or March 3–7, 2026. This aligns with stated intent 
+and creates a more aggressive but achievable timeline. 
+
+2. Preprint-to-Committee Timing 
+
+Contradiction: The master plan says to "post RNAnneal preprint" and "send committee 
+scheduling emails" both in February. Journal notes state: "Will delay reaching out to [committee] 
+until RNAnneal preprint is available online." This creates a compressed window if both must 
+happen in February with defense in late Feb/early March. 
+
+Resolution: Preprint submission should be prioritized in early-to-mid February (weeks 5–6). 
+Committee outreach emails should be drafted and ready to send immediately upon arXiv 
+posting (same day). Defense scheduling should target 2–3 weeks post-preprint. If preprint posts 
+by Feb 14, defense can realistically occur March 3–7. 
+
+3. EclipseBio Data vs. MII Mid-term 
+
+Potential Issue: The plan acknowledges EclipseBio data may slip relative to mid-term, but lists 
+"preliminary scoring metrics" as a mid-term deliverable. If samples haven't been submitted yet, 
+6–8 weeks puts data arrival in mid-March at earliest. 
+
+Resolution: Mid-term presentation should focus on: (1) live cloud demo, (2) benchmark plan 
+with RNA target list, (3) contract/quote status with EclipseBio, and (4) preliminary scoring using 
+existing public SHAPE data. Label experimental eSHAPE results as "in progress" with clear 
+timeline. 
+
+ 
+
+Page 3  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Workstream Details 
+
+■ Workstream 1: MII Grant (RNAnneal + eSHAPE Benchmark) 
+
+Owner: Lukas (primary), with Nadia supporting cloud infrastructure 
+Definition of Done: Mid-term demo in February; full 96-RNA benchmark with eSHAPE data + 
+final report by June 30. 
+
+• 
+January: Finalize RNA target list + batching plan; initiate EclipseBio contract/quote 
+($4,000 via AWS); stabilize cloud deployment 
+
+• 
+February: Deliver live cloud demo + benchmark plan at mid-term; submit sequences to 
+EclipseBio; document risks 
+
+• 
+March: Integrate EclipseBio data when it arrives; expand benchmark; formalize API 
+endpoints and documentation 
+
+• 
+April–May: Run benchmark at scale; iterate scoring model; complete M1/M2 analysis; 
+write final report 
+
+• 
+June: Submit final report and deliverables by June 30 
+
+■ Workstream 2: RNAnneal Free Tier Launch 
+
+Owner: Lukas (product), Nadia (infrastructure) 
+Definition of Done: Soft-launch to 10–20 labs; stable operations with limits, landing page, and 
+repeatable pipeline. 
+
+• 
+January: Define MVP scope (sequence limit, presets, queue); draft data policy; create 
+landing page copy 
+
+• 
+February: Soft launch to friendly labs; start collecting jobs; implement observability (logs, 
+failures, runtime) 
+
+• 
+March–May: Improve throughput and cost controls; add basic UX polish; identify paid tier 
+requirements 
+
+■ Workstream 3: Validation Case Studies 
+
+Owner: Lukas 
+Definition of Done: 2–3 tight stories with plots demonstrating "prediction → experiment" loop; 
+slide-ready materials. 
+Selected Case Studies: (1) Braselmann Mutant Dataset – riboswitch validation; (2) Broccoli 
+Temperature Robustness 
+
+• 
+January: Finalize case study selection; gather input data 
+
+• 
+February–March: Run analyses; generate plots; ship two slide-ready stories with 
+one-page writeups 
+
+■ Workstream 4: Fundraising & Partnerships 
+
+Owner: Lukas + Emergente co-founders 
+Definition of Done: Finalized raise strategy; 1–2 signed pilot agreements. 
+Prerequisites: Cloud product in users' hands; 1–2 compelling validation stories; credible 
+execution plan 
+
+• 
+March: Translate validation into 5–10 outbound targets; develop pilot proposals 
+
+Page 4  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+• 
+April: Aim for one signed pilot with defined scope and timeline 
+
+• 
+May–June: Finalize raise narrative; use MII/validation artifacts as proof points 
+
+Note: Received pitch deck feedback from Ihab and Aladin (Jan 6). Action: combine and 
+implement. Technical deck forwarded to Asif. 
+
+■ Workstream 5: PhD Thesis Defense 
+
+Owner: Lukas 
+Definition of Done: arXiv preprint live; committee scheduled; thesis defense completed. 
+Committee: Chris Jarzynski, Pratyush Tiwary (Advisor), Jay Schneekloth, Yifei Mo, Jeff Klauda 
+Target Defense: Feb 24–28 or Mar 3–7 
+
+• 
+January: Finalize RNAnneal preprint package; continue manuscript editing 
+
+• 
+Early Feb: Submit preprint to arXiv (target: by Feb 14) 
+
+• 
+Upon Posting: Send committee emails same day; lock defense window 
+
+■ Workstream 6: ARPA-H (Contingency) 
+
+Status: Proposal submitted; awaiting feedback. 
+If Selected: Within 2 weeks, pause non-deadline work; produce staffing plan, partner kickoff, 
+updated budget, scope split. 
+If Not Selected: Recycle into investor collateral; focus on MII + partner pilots. 
+
+ 
+
+Page 5  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Near-Term Actions (Next 6 Weeks) 
+
+Week-by-week tactical guidance for the immediate period: 
+
+Week 
+Key Actions 
+
+Week 1–2 (Now) 
+• Finalize EclipseBio meeting (Thursday) and submit quote request 
+($4,000 via AWS) 
+• Stabilize cloud URL for demo; finalize RNA list and batching plan 
+• Define what will be shown live at mid-term; continue RNAnneal 
+manuscript editing 
+
+Week 3–4 
+• Draft mid-term presentation slides; run live demo end-to-end (test all 
+failure modes) 
+• Start free-tier MVP build decisions (limits, presets, retention) 
+• Implement Ihab + Aladin pitch deck feedback 
+
+Week 5 
+• Mid-term rehearsal + backup plan (screenshots/video); finalize preprint 
+submission checklist 
+• Submit RNAnneal preprint to arXiv; draft committee outreach emails 
+
+Week 6 (Mid-term) 
+• Deliver MII mid-term presentation 
+• Upon preprint posting: Send committee emails same day; lock defense 
+window 
+• Convert feedback into revised March–June checklist 
+
+ 
+
+Page 6  |  Last Updated: January 12, 2026 
+
+
+Emergente & PhD Master Plan  |  Jan–Jun 2026 
+
+Contingency Plans 
+
+Pre-decided responses to enable rapid action without re-planning: 
+
+If ARPA-H award comes in: 
+
+Within 2 weeks, pause all non-deadline work (except MII) and produce: (1) staffing/time 
+allocation, (2) partner kickoff plan, (3) updated budget + timeline, (4) clear scope split between 
+ARPA-H deliverables and RNAnneal free-tier/validation roadmap. 
+
+If EclipseBio slips relative to mid-term: 
+
+Treat mid-term as "experiment underway"; ensure the demo + benchmark plan + preliminary 
+scoring results (from public SHAPE data) are strong enough to carry the meeting. Present clear 
+timeline for when experimental data will arrive. 
+
+If cloud demo is brittle: 
+
+Record a clean walkthrough video and keep screenshots as fallback. Aim for "boring reliability" 
+over features. 
+
+If thesis defense cannot be scheduled in Feb/Mar: 
+
+Push to early April (Week 14–15). This provides buffer before MII final report push while still 
+achieving Q2 defense. 
+
+Reference: Where Each Workstream Lives 
+
+Folder structure in master-plan/ containing detailed planning documents: 
+
+Workstream 
+Location 
+
+MII Grant 
+MII-grant/MII_Grant_Plan.docx 
+
+ARPA-H 
+arpa-h/ATTACHMENT A_Solution Summary Format.docx 
+
+EclipseBio 
+Constraints 
+
+case-studies/shape-benchmark/eclipsebio_meeting_summary.docx 
+
+Braselmann 
+Case Study 
+
+case-studies/braselmann-riboswitches/ 
+
+Broccoli Case 
+Study 
+
+case-studies/Broccolli/ 
+
+Free-Tier 
+Launch Plan 
+
+emergente-materials/RNAnneal_Commercialization_Strategy_v2.docx 
+
+Thesis Plan 
+lukas-thesis/thesis-plan-20260112/thesis-plan/Thesis_Plan_v2.docx 
+
+Fundraising 
+Context 
+
+pharma-partnerships/NS-PT-LH-AB-email_chain_01062026.txt 
+
+ 
+
+Page 7  |  Last Updated: January 12, 2026 
+
+

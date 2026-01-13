@@ -73,3 +73,66 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+
+# Large benchmark artifacts / datasets (keep code, not generated data)
+benchmark_runner/data/
+benchmark_runner/**/predictions.db
+benchmark_runner/**/meta.json
+benchmark_runner/**/qc.json
+
+# External tool checkouts/builds (installed locally; do not commit)
+external/
+RNAstructure/
+infernal-*/
+rscape_v*/
+
+# Large local datasets / scratch dirs
+cbl/
+rna_sets/
+vegf/
+
+# Local research artifacts
+*.db
+*.tar.gz
+*.tar.gz.*
+*.tgz
+*.tgz.*
+*.zip
+
+# LaTeX build outputs
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Local scratch notes / agent artifacts (keep out of upstream)
+repomix-output.xml
+allsub_update.patch
+changes.patch
+claude_launch_prompt.md
+consolidated_revisions.md
+git_commit_plan.md
+implementation_roadmap.md
+intiial_algorithmic_analysis.md
+mcmc_improvement_plan.md
+mcmc_sampler_bundle.txt
+moveset_improvement_plan.md
+rna_nuances_improvement_plan.md
+task_tracker.md
+whitepaper_summary_and_feedback.txt
+AUDIT.md
+CLAUDE_CODE_STATUS.md
+PATCH_PLAN.md
+fr3d_benchmark.*
+
+# Example outputs / scratch
+example/**/*.ct
+example/**/*.db
+example/**/*.fa
+example/**/*.sto
+example/**/*.cov
+example/*summary*.txt
+example/:wq
+example/pipeline_output/
+example/example/

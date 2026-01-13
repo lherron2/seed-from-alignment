@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import os
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,14 @@ DEFAULT_KISSING_LOOP_CANDIDATES = 1000  # Max structures to check for kissing lo
 DEFAULT_MAX_HELICES_SEQUENTIAL = 20  # Consider top N helices for single removal
 DEFAULT_MAX_HELICES_PAIRWISE = 10  # Consider top N helices for pairwise removal (N*(N-1)/2 combos)
 DEFAULT_MAX_SEEDS = 50  # Maximum number of 5'-3' initialization seeds to process per mask
+
+# Kissing-loop heuristics
+DEFAULT_KISSING_LOOP_LEN_RATIO_MIN = 0.5
+DEFAULT_KISSING_LOOP_LEN_RATIO_MAX = 2.0
+DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS = 4
+DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS = 3
+DEFAULT_KISSING_LOOP_MIN_STEM_SEP = 4
+DEFAULT_KISSING_LOOP_MAX_STEM_SEP = 200
 
 # Scoring Constants
 DEFAULT_SCAFFOLD_PAIR_ENERGY = -1.5  # Estimated kcal/mol per scaffold base pair
@@ -424,6 +433,7 @@ def call_rnastructure_allsub(
     absolute_energy: float | None = None,
     percent_energy: float | None = None,
     extra_args: Sequence[str] | None = None,
+    timeout_s: float | None = None,
 ) -> list[tuple[str, float]]:
     extra_args = list(extra_args) if extra_args is not None else []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -445,8 +455,10 @@ def call_rnastructure_allsub(
         cmd.extend(extra_args)
 
         try:
-            subprocess.run(cmd, check=True, text=True, capture_output=True)
+            subprocess.run(cmd, check=True, text=True, capture_output=True, timeout=timeout_s)
         except subprocess.CalledProcessError:
+            return [("." * len(subseq), 0.0)]
+        except subprocess.TimeoutExpired:
             return [("." * len(subseq), 0.0)]
 
         if not ct_path.is_file():
@@ -463,6 +475,7 @@ def call_rnastructure_duplexfold(
     seq3: str,
     temperature: float | None = None,
     extra_args: Sequence[str] | None = None,
+    timeout_s: float | None = None,
 ) -> list[tuple[list[tuple[int, int]], float]]:
     extra_args = list(extra_args) if extra_args is not None else []
     if not any(arg.startswith("-m") for arg in extra_args):
@@ -487,8 +500,10 @@ def call_rnastructure_duplexfold(
         cmd += extra_args
 
         try:
-            subprocess.run(cmd, check=True, text=True, capture_output=True)
+            subprocess.run(cmd, check=True, text=True, capture_output=True, timeout=timeout_s)
         except subprocess.CalledProcessError:
+            return []
+        except subprocess.TimeoutExpired:
             return []
 
         structures = parse_ct_file(ct_path)
@@ -545,7 +560,12 @@ def get_loop_interaction_options(
     extra_args,
     duplex_cache,
     L,
+    timeout_s: float | None = None,
     dense_window: bool = False,
+    loop_len_ratio_min: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    loop_len_ratio_max: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    min_canon_pairs: int = DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    min_contig_pairs: int = DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
 ) -> dict[tuple[int, int], list[tuple[set[tuple[int, int]], float]]]:
     options = {}
 
@@ -584,12 +604,26 @@ def get_loop_interaction_options(
                 for len_b in steps_b:
                     seq_b = full_seq[eb - len_b : eb]
 
+                    if not loop_len_ratio_ok(len_a, len_b, loop_len_ratio_min, loop_len_ratio_max):
+                        continue
+                    if estimate_max_canonical_pairs(seq_a, seq_b) < min_canon_pairs:
+                        continue
+                    if min_contig_pairs > 0 and not check_complementarity_heuristic(
+                        seq_a, seq_b, min_len=min_contig_pairs
+                    ):
+                        continue
+
                     dkey = (seq_a, seq_b, temperature, tuple(extra_args or []))
                     if dkey in duplex_cache:
                         d_res = duplex_cache[dkey]
                     else:
                         d_res = call_rnastructure_duplexfold(
-                            duplex_exe, seq_a, seq_b, temperature, extra_args
+                            duplex_exe,
+                            seq_a,
+                            seq_b,
+                            temperature,
+                            extra_args,
+                            timeout_s=timeout_s,
                         )
                         duplex_cache[dkey] = d_res
 
@@ -664,6 +698,10 @@ def get_5p3p_seeds(
     duplex_cache: dict,
     L: int,
     max_seeds: int = DEFAULT_MAX_SEEDS,
+    loop_len_ratio_min: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    loop_len_ratio_max: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    min_canon_pairs: int = DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    min_contig_pairs: int = DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
 ) -> list[tuple[set[tuple[int, int]], float]]:
     """Explicitly find 5'-3' interaction candidates to seed the refinement."""
     paired_mask = [False] * L
@@ -705,7 +743,19 @@ def get_5p3p_seeds(
         term_runs = [(start_5p, end_5p), (start_3p, end_3p)]
 
     opts_map = get_loop_interaction_options(
-        term_runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L, dense_window=True
+        term_runs,
+        full_seq,
+        duplex_exe,
+        temperature,
+        extra_args,
+        duplex_cache,
+        L,
+        timeout_s=2.0,
+        dense_window=True,
+        loop_len_ratio_min=loop_len_ratio_min,
+        loop_len_ratio_max=loop_len_ratio_max,
+        min_canon_pairs=min_canon_pairs,
+        min_contig_pairs=min_contig_pairs,
     )
 
     seeds = []
@@ -830,11 +880,12 @@ def generate_masked_scaffolds(
 # --- Kissing Loop Discovery ---
 
 
-def find_hairpin_loops(pairs: set[tuple[int, int]], L: int) -> list[tuple[int, int]]:
+def find_hairpin_loops(pairs: set[tuple[int, int]], L: int) -> list[tuple[int, int, int, int]]:
     """
     Identify unpaired 'hairpin' loops.
     A hairpin loop is a region (i+1...j-1) that is completely unpaired,
     where (i, j) is a closing pair.
+    Returns list of (start, end, stem_left, stem_right).
     """
     paired_pos = {p for pair in pairs for p in pair}
     hairpins = []
@@ -853,12 +904,12 @@ def find_hairpin_loops(pairs: set[tuple[int, int]], L: int) -> list[tuple[int, i
                 break
 
         if is_empty:
-            hairpins.append((u + 1, v))  # The loop region itself (start, end-exclusive)
+            hairpins.append((u + 1, v, u, v))  # Loop region + closing stem
 
     return hairpins
 
 
-def check_complementarity_heuristic(seq1: str, seq2: str, min_len: int = 3) -> bool:
+def check_complementarity_heuristic(seq1: str, seq2: str, min_len: int = 6) -> bool:
     """
     Fast check if two sequences have any contiguous complementary substring
     of at least min_len (handling standard WC+GU).
@@ -906,6 +957,69 @@ def check_complementarity_heuristic(seq1: str, seq2: str, min_len: int = 3) -> b
     return False
 
 
+def estimate_max_canonical_pairs(seq1: str, seq2: str) -> int:
+    """Cheap upper bound for how many canonical pairs two loops could form."""
+    len1 = len(seq1)
+    len2 = len(seq2)
+    if len1 == 0 or len2 == 0:
+        return 0
+
+    counts1 = {
+        "A": seq1.upper().count("A"),
+        "U": seq1.upper().count("U"),
+        "G": seq1.upper().count("G"),
+        "C": seq1.upper().count("C"),
+    }
+    counts2 = {
+        "A": seq2.upper().count("A"),
+        "U": seq2.upper().count("U"),
+        "G": seq2.upper().count("G"),
+        "C": seq2.upper().count("C"),
+    }
+
+    approx = 0
+    approx += min(counts1["A"], counts2["U"])
+    approx += min(counts1["U"], counts2["A"])
+    approx += min(counts1["G"], counts2["C"])
+    approx += min(counts1["C"], counts2["G"])
+    approx += min(counts1["G"], counts2["U"])
+    approx += min(counts1["U"], counts2["G"])
+
+    return min(len1, len2, approx)
+
+
+def loop_len_ratio_ok(length_a: int, length_b: int, ratio_min: float, ratio_max: float) -> bool:
+    if length_a <= 0 or length_b <= 0:
+        return False
+    ratio = length_a / length_b
+    return ratio_min <= ratio <= ratio_max
+
+
+def load_cache(path: Path | None) -> dict:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        with path.open("rb") as fh:
+            obj = pickle.load(fh)
+            if isinstance(obj, dict):
+                return obj
+            sys.stderr.write(f"[WARN] Cache file did not contain a dict: {path}\n")
+            return {}
+    except Exception as exc:
+        sys.stderr.write(f"[WARN] Failed to load cache {path}: {exc}\n")
+        return {}
+
+
+def save_cache(path: Path | None, cache: dict) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("wb") as fh:
+        pickle.dump(cache, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp_path.replace(path)
+
+
 def detect_and_add_kissing_loops(
     candidates: list[tuple[str, float]],
     full_seq: str,
@@ -913,7 +1027,14 @@ def detect_and_add_kissing_loops(
     temperature: float | None,
     extra_args: Sequence[str] | None,
     duplex_cache: dict,
+    timeout_s: float | None = None,
     kissing_loop_candidates: int = DEFAULT_KISSING_LOOP_CANDIDATES,
+    loop_len_ratio_min: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    loop_len_ratio_max: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    min_canon_pairs: int = DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    min_contig_pairs: int = DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
+    min_stem_sep: int = DEFAULT_KISSING_LOOP_MIN_STEM_SEP,
+    max_stem_sep: int = DEFAULT_KISSING_LOOP_MAX_STEM_SEP,
     scaffold_pair_energy: float = DEFAULT_SCAFFOLD_PAIR_ENERGY,
     weight_l0: float = DEFAULT_WEIGHT_L0,
     weight_l1: float = DEFAULT_WEIGHT_L1,
@@ -945,18 +1066,31 @@ def detect_and_add_kissing_loops(
         # Check pairs of loops
         for l_idx_a in range(len(loops)):
             for l_idx_b in range(l_idx_a + 1, len(loops)):
-                start_a, end_a = loops[l_idx_a]
-                start_b, end_b = loops[l_idx_b]
+                start_a, end_a, stem_left_a, stem_right_a = loops[l_idx_a]
+                start_b, end_b, stem_left_b, stem_right_b = loops[l_idx_b]
 
-                # Check distance (sterics)
-                if abs(start_a - start_b) < 4:
+                len_a = end_a - start_a
+                len_b = end_b - start_b
+                if not loop_len_ratio_ok(len_a, len_b, loop_len_ratio_min, loop_len_ratio_max):
+                    continue
+
+                stem_center_a = (stem_left_a + stem_right_a) / 2.0
+                stem_center_b = (stem_left_b + stem_right_b) / 2.0
+                stem_sep = abs(stem_center_a - stem_center_b)
+                if stem_sep < min_stem_sep:
+                    continue
+                if max_stem_sep is not None and stem_sep > max_stem_sep:
                     continue
 
                 seq_a = full_seq[start_a:end_a]
                 seq_b = full_seq[start_b:end_b]
 
-                # Heuristic Filter
-                if not check_complementarity_heuristic(seq_a, seq_b, min_len=3):
+                # Heuristic Filters
+                if estimate_max_canonical_pairs(seq_a, seq_b) < min_canon_pairs:
+                    continue
+                if min_contig_pairs > 0 and not check_complementarity_heuristic(
+                    seq_a, seq_b, min_len=min_contig_pairs
+                ):
                     continue
 
                 # Run DuplexFold
@@ -965,7 +1099,12 @@ def detect_and_add_kissing_loops(
                     d_res = duplex_cache[dkey]
                 else:
                     d_res = call_rnastructure_duplexfold(
-                        duplex_exe, seq_a, seq_b, temperature, extra_args
+                        duplex_exe,
+                        seq_a,
+                        seq_b,
+                        temperature,
+                        extra_args,
+                        timeout_s=timeout_s,
                     )
                     duplex_cache[dkey] = d_res
 
@@ -1058,6 +1197,7 @@ def _refine_structure_impl(
     allsub_exe: Path,
     duplex_exe: Path,
     min_unpaired_len: int,
+    max_seconds: float | None = None,
     temperature: float | None = None,
     absolute_energy: float | None = None,
     percent_energy: float | None = None,
@@ -1073,11 +1213,34 @@ def _refine_structure_impl(
     max_regions_to_refine: int = DEFAULT_MAX_REGIONS_TO_REFINE,
     max_solutions: int = DEFAULT_MAX_SOLUTIONS,
     kissing_loop_candidates: int = DEFAULT_KISSING_LOOP_CANDIDATES,
+    kissing_loop_len_ratio_min: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    kissing_loop_len_ratio_max: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    kissing_loop_min_canon_pairs: int = DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    kissing_loop_min_contig_pairs: int = DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
+    kissing_loop_min_stem_sep: int = DEFAULT_KISSING_LOOP_MIN_STEM_SEP,
+    kissing_loop_max_stem_sep: int = DEFAULT_KISSING_LOOP_MAX_STEM_SEP,
     scaffold_pair_energy: float = DEFAULT_SCAFFOLD_PAIR_ENERGY,
     weight_l0: float = DEFAULT_WEIGHT_L0,
     weight_l1: float = DEFAULT_WEIGHT_L1,
     weight_l2_plus: float = DEFAULT_WEIGHT_L2_PLUS,
 ) -> list[tuple[str, float]]:
+    import time
+
+    t0 = time.time()
+
+    def timed_out() -> bool:
+        return max_seconds is not None and (time.time() - t0) > float(max_seconds)
+
+    def remaining_seconds(cap: float | None = None) -> float | None:
+        if max_seconds is None:
+            return cap
+        rem = float(max_seconds) - (time.time() - t0)
+        if rem <= 0:
+            return 0.0
+        if cap is None:
+            return rem
+        return min(rem, cap)
+
     L = len(full_seq)
     if len(struct) != L:
         raise ValueError("Structure/Sequence length mismatch")
@@ -1108,6 +1271,11 @@ def _refine_structure_impl(
 
     # Iterate over every Masked Variant (Consensus perturbation)
     for mask_idx, base_scaffold in enumerate(masked_scaffolds):
+        if timed_out():
+            sys.stderr.write(
+                f"[WARN] Refinement timed out after {max_seconds}s; returning partial results.\n"
+            )
+            break
         sys.stderr.write(
             f"[REFINE] Processing Mask {mask_idx + 1}/{len(masked_scaffolds)} (Pairs: {len(base_scaffold)})...\n"
         )
@@ -1127,17 +1295,31 @@ def _refine_structure_impl(
             duplex_cache,
             L,
             max_seeds=max_seeds,
+            loop_len_ratio_min=kissing_loop_len_ratio_min,
+            loop_len_ratio_max=kissing_loop_len_ratio_max,
+            min_canon_pairs=kissing_loop_min_canon_pairs,
+            min_contig_pairs=kissing_loop_min_contig_pairs,
         )
         sys.stderr.write(
             f"[REFINE]   Generated {len(seed_interactions)} end-to-end seeds for Mask {mask_idx + 1}.\n"
         )
 
         for seed, energy in seed_interactions:
+            if timed_out():
+                sys.stderr.write(
+                    f"[WARN] Refinement timed out after {max_seconds}s; stopping seed expansion.\n"
+                )
+                break
             new_scaffold = base_scaffold.union(seed)
             scaffolds_to_process.append((new_scaffold, energy))
 
         # 4. Process each Seeded Scaffold independently
         for seed_idx, (current_scaffold, base_energy) in enumerate(scaffolds_to_process):
+            if timed_out():
+                sys.stderr.write(
+                    f"[WARN] Refinement timed out after {max_seconds}s; stopping remaining seeds.\n"
+                )
+                break
             # Recalculate runs based on the current scaffold
             current_struct_str = pairs_to_rosetta_string(list(current_scaffold), L)
             runs = find_unpaired_runs(current_struct_str, min_unpaired_len)
@@ -1174,6 +1356,11 @@ def _refine_structure_impl(
             # --- Pre-computation for LOCAL Options ---
             local_options: dict[int, list[tuple[set[tuple[int, int]], float]]] = {}
             for idx, (start, end) in enumerate(runs):
+                if timed_out():
+                    sys.stderr.write(
+                        f"[WARN] Refinement timed out after {max_seconds}s; stopping local option precompute.\n"
+                    )
+                    break
                 subseq = full_seq[start:end]
                 key = (
                     subseq,
@@ -1187,7 +1374,13 @@ def _refine_structure_impl(
                     sub_structs = allsub_cache[key]
                 else:
                     sub_structs = call_rnastructure_allsub(
-                        allsub_exe, subseq, temperature, absolute_energy, percent_energy, extra_args
+                        allsub_exe,
+                        subseq,
+                        temperature,
+                        absolute_energy,
+                        percent_energy,
+                        extra_args,
+                        timeout_s=remaining_seconds(cap=2.0),
                     )
                     allsub_cache[key] = sub_structs
 
@@ -1208,7 +1401,18 @@ def _refine_structure_impl(
             ] = {}
             if len(runs) >= 2:
                 interaction_options = get_loop_interaction_options(
-                    runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
+                    runs,
+                    full_seq,
+                    duplex_exe,
+                    temperature,
+                    extra_args,
+                    duplex_cache,
+                    L,
+                    timeout_s=remaining_seconds(cap=2.0),
+                    loop_len_ratio_min=kissing_loop_len_ratio_min,
+                    loop_len_ratio_max=kissing_loop_len_ratio_max,
+                    min_canon_pairs=kissing_loop_min_canon_pairs,
+                    min_contig_pairs=kissing_loop_min_contig_pairs,
                 )
 
             # (pair_set, current_score)
@@ -1220,6 +1424,13 @@ def _refine_structure_impl(
                 f"[REFINE]     Mask {mask_idx + 1}, Seed {seed_idx + 1}: Starting Track 1 (Combinatorial)...\n"
             )
             num_regions = len(runs)
+            noop_option = [(set(), 0.0)]
+
+            def _get_local_options(region_idx: int):
+                # If we timed out during local-option precompute, some regions may be missing.
+                # Treat missing regions as having only a no-op option so refinement degrades
+                # gracefully instead of crashing.
+                return local_options.get(region_idx, noop_option)
 
             def _backtrack_track1(
                 idx: int,
@@ -1227,6 +1438,8 @@ def _refine_structure_impl(
                 current_pairs: set[tuple[int, int]],
                 current_score: float,
             ):
+                if timed_out():
+                    return
                 if len(track1_results) >= max_solutions:
                     return
                 if idx >= num_regions:
@@ -1238,6 +1451,8 @@ def _refine_structure_impl(
 
                 # Interaction
                 for k in range(idx + 1, num_regions):
+                    if timed_out():
+                        return
                     if k in covered:
                         continue
                     opts = interaction_options.get((idx, k))
@@ -1246,6 +1461,8 @@ def _refine_structure_impl(
                         new_covered_int.add(idx)
                         new_covered_int.add(k)
                         for int_set, int_energy in opts:
+                            if timed_out():
+                                return
                             if len(track1_results) >= max_solutions:
                                 return
                             used_indices = {x for p in int_set for x in p}
@@ -1253,17 +1470,21 @@ def _refine_structure_impl(
                             # Compatible local
                             compatible_idx = [
                                 l
-                                for l in local_options[idx]
+                                for l in _get_local_options(idx)
                                 if {x for p in l[0] for x in p}.isdisjoint(used_indices)
-                            ] or [(set(), 0.0)]
+                            ] or noop_option
                             compatible_k = [
                                 l
-                                for l in local_options[k]
+                                for l in _get_local_options(k)
                                 if {x for p in l[0] for x in p}.isdisjoint(used_indices)
-                            ] or [(set(), 0.0)]
+                            ] or noop_option
 
                             for c_i, e_i in compatible_idx:
+                                if timed_out():
+                                    return
                                 for c_k, e_k in compatible_k:
+                                    if timed_out():
+                                        return
                                     if len(track1_results) >= max_solutions:
                                         return
                                     combined_set = int_set.union(c_i).union(c_k)
@@ -1277,7 +1498,9 @@ def _refine_structure_impl(
                 # Local
                 new_covered_local = covered.copy()
                 new_covered_local.add(idx)
-                for loc_set, loc_energy in local_options[idx]:
+                for loc_set, loc_energy in _get_local_options(idx):
+                    if timed_out():
+                        return
                     if len(track1_results) >= max_solutions:
                         return
                     _backtrack_track1(
@@ -1296,10 +1519,15 @@ def _refine_structure_impl(
             sys.stderr.write(
                 f"[REFINE]     Mask {mask_idx + 1}, Seed {seed_idx + 1}: Starting Track 2 (Sequential)...\n"
             )
-            all_local_lists = [local_options[i] for i in range(num_regions)]
+            all_local_lists = [_get_local_options(i) for i in range(num_regions)]
 
             # Using Cartesian product
             for local_combo in itertools.product(*all_local_lists):
+                if timed_out():
+                    sys.stderr.write(
+                        f"[WARN] Refinement timed out after {max_seconds}s; stopping Track 2.\n"
+                    )
+                    break
                 if len(track2_results) >= max_solutions:
                     break
 
@@ -1339,10 +1567,23 @@ def _refine_structure_impl(
                     continue
 
                 loop_int_options = get_loop_interaction_options(
-                    sub_runs, full_seq, duplex_exe, temperature, extra_args, duplex_cache, L
+                    sub_runs,
+                    full_seq,
+                    duplex_exe,
+                    temperature,
+                    extra_args,
+                    duplex_cache,
+                    L,
+                    timeout_s=remaining_seconds(cap=2.0),
+                    loop_len_ratio_min=kissing_loop_len_ratio_min,
+                    loop_len_ratio_max=kissing_loop_len_ratio_max,
+                    min_canon_pairs=kissing_loop_min_canon_pairs,
+                    min_contig_pairs=kissing_loop_min_contig_pairs,
                 )
                 loop_local_options = {}
                 for l_idx, (start, end) in enumerate(sub_runs):
+                    if timed_out():
+                        break
                     subseq = full_seq[start:end]
                     key = (
                         subseq,
@@ -1361,6 +1602,7 @@ def _refine_structure_impl(
                             absolute_energy,
                             percent_energy,
                             extra_args,
+                            timeout_s=remaining_seconds(cap=2.0),
                         )
                         allsub_cache[key] = sub_structs
                     l_opt_sets = []
@@ -1377,6 +1619,8 @@ def _refine_structure_impl(
                 def _backtrack_track2_loops(
                     l_idx: int, l_covered: set[int], l_pairs: set[tuple[int, int]], l_score: float
                 ):
+                    if timed_out():
+                        return
                     if len(track2_results) >= max_solutions:
                         return
                     if l_idx >= num_loops:
@@ -1387,6 +1631,8 @@ def _refine_structure_impl(
                         return
 
                     for k in range(l_idx + 1, num_loops):
+                        if timed_out():
+                            return
                         if k in l_covered:
                             continue
                         opts = loop_int_options.get((l_idx, k))
@@ -1395,6 +1641,8 @@ def _refine_structure_impl(
                             new_cov_pair.add(l_idx)
                             new_cov_pair.add(k)
                             for int_set, int_en in opts:
+                                if timed_out():
+                                    return
                                 if len(track2_results) >= max_solutions:
                                     return
                                 _backtrack_track2_loops(
@@ -1407,6 +1655,8 @@ def _refine_structure_impl(
                     new_cov_local = l_covered.copy()
                     new_cov_local.add(l_idx)
                     for l_set, l_en in loop_local_options[l_idx]:
+                        if timed_out():
+                            return
                         if len(track2_results) >= max_solutions:
                             return
                         _backtrack_track2_loops(
@@ -1468,7 +1718,14 @@ def _refine_structure_impl(
         temperature=temperature,
         extra_args=extra_args,
         duplex_cache=duplex_cache,
+        timeout_s=remaining_seconds(cap=2.0),
         kissing_loop_candidates=kissing_loop_candidates,
+        loop_len_ratio_min=kissing_loop_len_ratio_min,
+        loop_len_ratio_max=kissing_loop_len_ratio_max,
+        min_canon_pairs=kissing_loop_min_canon_pairs,
+        min_contig_pairs=kissing_loop_min_contig_pairs,
+        min_stem_sep=kissing_loop_min_stem_sep,
+        max_stem_sep=kissing_loop_max_stem_sep,
         scaffold_pair_energy=scaffold_pair_energy,
         weight_l0=weight_l0,
         weight_l1=weight_l1,
@@ -1484,6 +1741,7 @@ def refine_structure(
     allsub_exe: Path,
     duplex_exe: Path,
     min_unpaired_len: int,
+    max_seconds: float | None = None,
     temperature: float | None = None,
     absolute_energy: float | None = None,
     percent_energy: float | None = None,
@@ -1500,6 +1758,12 @@ def refine_structure(
     max_regions_to_refine: int = DEFAULT_MAX_REGIONS_TO_REFINE,
     max_solutions: int = DEFAULT_MAX_SOLUTIONS,
     kissing_loop_candidates: int = DEFAULT_KISSING_LOOP_CANDIDATES,
+    kissing_loop_len_ratio_min: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    kissing_loop_len_ratio_max: float = DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    kissing_loop_min_canon_pairs: int = DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    kissing_loop_min_contig_pairs: int = DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
+    kissing_loop_min_stem_sep: int = DEFAULT_KISSING_LOOP_MIN_STEM_SEP,
+    kissing_loop_max_stem_sep: int = DEFAULT_KISSING_LOOP_MAX_STEM_SEP,
     scaffold_pair_energy: float = DEFAULT_SCAFFOLD_PAIR_ENERGY,
     weight_l0: float = DEFAULT_WEIGHT_L0,
     weight_l1: float = DEFAULT_WEIGHT_L1,
@@ -1511,6 +1775,7 @@ def refine_structure(
         allsub_exe=allsub_exe,
         duplex_exe=duplex_exe,
         min_unpaired_len=min_unpaired_len,
+        max_seconds=max_seconds,
         temperature=temperature,
         absolute_energy=absolute_energy,
         percent_energy=percent_energy,
@@ -1525,6 +1790,12 @@ def refine_structure(
         max_regions_to_refine=max_regions_to_refine,
         max_solutions=max_solutions,
         kissing_loop_candidates=kissing_loop_candidates,
+        kissing_loop_len_ratio_min=kissing_loop_len_ratio_min,
+        kissing_loop_len_ratio_max=kissing_loop_len_ratio_max,
+        kissing_loop_min_canon_pairs=kissing_loop_min_canon_pairs,
+        kissing_loop_min_contig_pairs=kissing_loop_min_contig_pairs,
+        kissing_loop_min_stem_sep=kissing_loop_min_stem_sep,
+        kissing_loop_max_stem_sep=kissing_loop_max_stem_sep,
         scaffold_pair_energy=scaffold_pair_energy,
         weight_l0=weight_l0,
         weight_l1=weight_l1,
@@ -1623,6 +1894,36 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--kissing-loop-candidates", type=int, default=DEFAULT_KISSING_LOOP_CANDIDATES
     )
+    parser.add_argument(
+        "--kissing-loop-len-ratio-min",
+        type=float,
+        default=DEFAULT_KISSING_LOOP_LEN_RATIO_MIN,
+    )
+    parser.add_argument(
+        "--kissing-loop-len-ratio-max",
+        type=float,
+        default=DEFAULT_KISSING_LOOP_LEN_RATIO_MAX,
+    )
+    parser.add_argument(
+        "--kissing-loop-min-canon-pairs",
+        type=int,
+        default=DEFAULT_KISSING_LOOP_MIN_CANON_PAIRS,
+    )
+    parser.add_argument(
+        "--kissing-loop-min-contig-pairs",
+        type=int,
+        default=DEFAULT_KISSING_LOOP_MIN_CONTIG_PAIRS,
+    )
+    parser.add_argument(
+        "--kissing-loop-min-stem-sep",
+        type=int,
+        default=DEFAULT_KISSING_LOOP_MIN_STEM_SEP,
+    )
+    parser.add_argument(
+        "--kissing-loop-max-stem-sep",
+        type=int,
+        default=DEFAULT_KISSING_LOOP_MAX_STEM_SEP,
+    )
     parser.add_argument("--scaffold-pair-energy", type=float, default=DEFAULT_SCAFFOLD_PAIR_ENERGY)
     parser.add_argument("--weight-l0", type=float, default=DEFAULT_WEIGHT_L0)
     parser.add_argument("--weight-l1", type=float, default=DEFAULT_WEIGHT_L1)
@@ -1679,6 +1980,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             max_regions_to_refine=args.max_regions_to_refine,
             max_solutions=args.max_solutions,
             kissing_loop_candidates=args.kissing_loop_candidates,
+            kissing_loop_len_ratio_min=args.kissing_loop_len_ratio_min,
+            kissing_loop_len_ratio_max=args.kissing_loop_len_ratio_max,
+            kissing_loop_min_canon_pairs=args.kissing_loop_min_canon_pairs,
+            kissing_loop_min_contig_pairs=args.kissing_loop_min_contig_pairs,
+            kissing_loop_min_stem_sep=args.kissing_loop_min_stem_sep,
+            kissing_loop_max_stem_sep=args.kissing_loop_max_stem_sep,
             scaffold_pair_energy=args.scaffold_pair_energy,
             weight_l0=args.weight_l0,
             weight_l1=args.weight_l1,

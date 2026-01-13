@@ -1,0 +1,76 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\title{RNAnneal-ss: Incorporating LinearFold-V and EternaFold Suboptimals}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Motivation (FR3D/BGSU under400, non-rRNA; N=804)}
+On this benchmark, both \textbf{LinearFold-V} and \textbf{EternaFold} achieve higher \textbf{F1@100} than the current RNAnneal-ss pipeline. This suggests these methods generate \emph{better candidate ensembles and/or better global scaffolds}, especially for longer RNAs, and motivates using their \textbf{suboptimal} structures inside RNAnneal-ss to improve \textbf{F1@100} and reduce \textbf{Fail@100}.
+
+\section*{Key empirical signals}
+\begin{itemize}
+  \item Mean F1@100: RNAnneal-ss \(\approx 0.784\), LinearFold-V \(\approx 0.794\), EternaFold \(\approx 0.820\).
+  \item ``Oracle'' per-target max across the three methods reaches mean F1@100 \(\approx 0.846\), indicating substantial headroom from ensembling.
+  \item Fail@100 (best-of-100 F1 \(=0\)): RNAnneal-ss \(\approx 1.2\%\), LinearFold-V \(\approx 0.6\%\), EternaFold \(\approx 0.1\%\); all-three fail \(\approx 0.1\%\).
+  \item \textbf{Where the good structure appears:} LinearFold-V's best-of-100 is usually early (median rank \(4\)), while EternaFold's best-of-100 is often late (median rank \(29\); \(\sim 47\%\) of targets have best rank \(>30\)). This argues for \textbf{including many EternaFold samples} or selecting an evidence-ranked subset rather than only top-1.
+\end{itemize}
+
+\section*{Strategy}
+\subsection*{1) External candidates (guaranteed coverage@100)}
+Treat LinearFold-V and EternaFold structures as \textbf{first-class candidates} in the final top-100 list (not only as internal scaffolds). To target F1@100, ordering is secondary; what matters is ensuring the pool contains diverse, plausible folds.
+
+\textbf{Recommended allocation (length-adaptive):}
+\begin{itemize}
+  \item \(L \le 150\): reserve 15--25 slots each for (LinearFold-V, EternaFold), keep remaining for RNAnneal-ss candidates.
+  \item \(151 \le L \le 300\): reserve 25--35 LinearFold-V and 35--50 EternaFold (late best ranks), reduce RNAnneal-ss share accordingly.
+  \item \(301 \le L \le 400\): reserve 35--45 each for (LinearFold-V, EternaFold), since both scale better and RNAnneal-ss currently lags in these buckets.
+\end{itemize}
+Within each reserved block, select a \textbf{diverse subset} (e.g., max-min Jaccard distance over base-pair sets) and keep at least one \textbf{top-1} structure from each method.
+
+\subsection*{2) External scaffolds for MCMC sampling}
+Use a subset of external structures as additional \textbf{scaffolds} for RNAnneal-ss sampling:
+\begin{itemize}
+  \item Build a \textbf{scaffold pool} from: CaCoFold SS\_cons (and refined variants), MFE, LinearFold-V suboptimals, EternaFold MEA + samples.
+  \item Run sampling in two regimes:
+    \begin{itemize}
+      \item \textbf{Fixed-scaffold pass} (current default): fill in remaining positions around each scaffold.
+      \item \textbf{Unfixed-scaffold pass} (recommended for \(L \ge 151\) and for external scaffolds): allow edits to scaffold pairs so a ``good-but-wrong'' scaffold can be repaired.
+    \end{itemize}
+  \item Merge sampled candidates back into the global candidate pool and deduplicate by dot-bracket string.
+\end{itemize}
+
+\subsection*{3) Optional: external-pair evidence component}
+Convert the external ensembles into an \textbf{evidence map}:
+\begin{itemize}
+  \item Compute per-pair frequencies across (LinearFold-V top-\(K\), EternaFold samples).
+  \item Add a new weight component (e.g., \(\log(p+\epsilon)\) or \(p\)) blended into the RNAnneal-ss scoring weights with a length-adaptive coefficient.
+  \item This can reduce Fail@100 by ensuring globally plausible long-range pairs become \emph{available} to the sampler even when CaCoFold/thermo evidence is weak.
+\end{itemize}
+
+\section*{Implementation outline (code design)}
+\begin{itemize}
+  \item Add an ``external candidate'' step in the RNAnneal-ss pipeline driver:
+    \begin{itemize}
+      \item LinearFold-V (\texttt{--zuker}) \(\rightarrow\) up to 100 unique structures.
+      \item EternaFold MEA + \texttt{contrafold sample} \(\rightarrow\) up to 100 unique structures (note: stochastic; no seed flag).
+    \end{itemize}
+  \item Separate \textbf{sampling scaffolds} from \textbf{candidate list} to avoid treating injected external scaffolds as ``refined'' variants (and to keep existing refined-prefix heuristics meaningful).
+  \item Add per-source quotas in the final top-100 selector (especially for \(L \ge 151\)) so external candidates are not pruned by proxy scoring.
+  \item Add caching keyed by \((method, sequence)\) to avoid re-running external tools across experiments.
+\end{itemize}
+
+\section*{Benchmark plan (focus: F1@100 and Fail@100)}
+\begin{itemize}
+  \item Primary ablations: (A) candidates-only quotas, (B) scaffolds for sampling, (C) external-pair evidence weights, (A+B), (A+B+C).
+  \item Report overall and by-length buckets (30--80, 81--150, 151--300, 301--400).
+  \item Track runtime overhead per target (especially for \(L \ge 151\)).
+\end{itemize}
+
+\end{document}
+

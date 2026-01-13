@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 
+from .candidate_index import CandidateEdgeIndex
 from .segments import SegmentIndex
 
 __all__ = [
@@ -74,6 +75,7 @@ def propose_toggle(
     weights: dict[tuple[int, int], float],
     rng,
     min_hairpin: int = 3,
+    candidate_index: CandidateEdgeIndex | None = None,
 ) -> MoveResult:
     """Propose a toggle move (add or remove one pair).
 
@@ -91,6 +93,86 @@ def propose_toggle(
     Returns:
         MoveResult with proposal details
     """
+    if candidate_index is not None:
+        counts_before = candidate_index.counts()
+        p_add, p_rem = candidate_index.toggle_choice_probs(
+            counts_before.addable, counts_before.removable
+        )
+        if p_add == 0.0 and p_rem == 0.0:
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                is_valid=False,
+            )
+
+        do_add = p_add > 0 and (p_rem == 0 or rng.random() < (p_add / (p_add + p_rem)))
+        if do_add:
+            if counts_before.addable <= 0:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+            edge_idx = candidate_index.addable.random(rng)
+            i = candidate_index.edges_i[edge_idx]
+            j = candidate_index.edges_j[edge_idx]
+            if partners[i] != -1 or partners[j] != -1:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+            if j - i - 1 < min_hairpin:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+
+            counts_after = candidate_index.estimate_counts_after_add(edge_idx, partners)
+            p_add_after, p_rem_after = candidate_index.toggle_choice_probs(
+                counts_after.addable, counts_after.removable
+            )
+            if counts_after.removable <= 0 or p_rem_after <= 0 or p_add <= 0:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+
+            q_fwd = p_add / float(counts_before.addable)
+            q_rev = p_rem_after / float(counts_after.removable)
+            hastings = q_rev / q_fwd
+
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                pairs_added={(i, j)},
+                pairs_removed=None,
+                hastings_ratio=hastings,
+                is_valid=True,
+            )
+        else:
+            if counts_before.removable <= 0:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+            edge_idx = candidate_index.removable.random(rng)
+            i = candidate_index.edges_i[edge_idx]
+            j = candidate_index.edges_j[edge_idx]
+            edge = (i, j)
+            if edge in fixed_pairs:
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+            if not (partners[i] == j and partners[j] == i):
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+
+            counts_after = candidate_index.estimate_counts_after_remove(edge_idx, partners)
+            p_add_after, p_rem_after = candidate_index.toggle_choice_probs(
+                counts_after.addable, counts_after.removable
+            )
+            if (
+                counts_before.removable <= 0
+                or p_rem <= 0
+                or counts_after.addable <= 0
+                or p_add_after <= 0
+            ):
+                return MoveResult(move_type=MoveType.TOGGLE, is_valid=False)
+
+            q_fwd = p_rem / float(counts_before.removable)
+            q_rev = p_add_after / float(counts_after.addable)
+            hastings = q_rev / q_fwd
+
+            return MoveResult(
+                accepted=False,
+                move_type=MoveType.TOGGLE,
+                pairs_removed={edge},
+                pairs_added=None,
+                hastings_ratio=hastings,
+                is_valid=True,
+            )
+
     if not candidate_pairs:
         return MoveResult(
             accepted=False,
@@ -162,6 +244,8 @@ def propose_segment_birth_death(
     weights: dict[tuple[int, int], float],
     rng,
     min_hairpin: int = 3,
+    force_move: MoveType | None = None,
+    fast_uniform_pool: bool = False,
 ) -> MoveResult:
     """Propose a segment birth or death move.
 
@@ -180,12 +264,65 @@ def propose_segment_birth_death(
         weights: Weight dictionary
         rng: Random number generator
         min_hairpin: Minimum hairpin loop size
+        force_move: If set, force birth or death move type
 
     Returns:
         MoveResult with proposal details
     """
     from .segments import find_addable_segments, find_removable_segments
 
+    segments = segment_index.all_segments_list
+    if not segments:
+        return MoveResult(move_type=MoveType.SEGMENT_BIRTH, is_valid=False)
+
+    if fast_uniform_pool:
+        # Uniform-from-global-pool proposal:
+        # q selects a segment uniformly from all segments, then proposes add/remove if valid.
+        # This avoids O(#segments) scans and keeps detailed balance (Hastings within type = 1).
+        seg = segments[rng.randrange(len(segments))]
+        seg_pairs = seg.pairs()
+        pairs_set = set(seg_pairs)
+
+        want_birth = force_move == MoveType.SEGMENT_BIRTH
+        want_death = force_move == MoveType.SEGMENT_DEATH
+        if force_move is None:
+            # Default: decide based on whether the segment is currently present.
+            # If present and removable -> death; else attempt birth.
+            want_death = all(p in matching for p in seg_pairs)
+            want_birth = not want_death
+
+        if want_birth:
+            # Add segment if all positions are free and hairpins OK.
+            for i, j in seg_pairs:
+                if partners[i] != -1 or partners[j] != -1:
+                    return MoveResult(move_type=MoveType.SEGMENT_BIRTH, is_valid=False)
+                if j - i - 1 < min_hairpin:
+                    return MoveResult(move_type=MoveType.SEGMENT_BIRTH, is_valid=False)
+            return MoveResult(
+                move_type=MoveType.SEGMENT_BIRTH,
+                pairs_added=pairs_set,
+                pairs_removed=None,
+                hastings_ratio=1.0,
+                is_valid=True,
+            )
+
+        if want_death:
+            # Remove segment if fully present and none fixed.
+            if not all(p in matching for p in seg_pairs):
+                return MoveResult(move_type=MoveType.SEGMENT_DEATH, is_valid=False)
+            if any(p in fixed_pairs for p in seg_pairs):
+                return MoveResult(move_type=MoveType.SEGMENT_DEATH, is_valid=False)
+            return MoveResult(
+                move_type=MoveType.SEGMENT_DEATH,
+                pairs_added=None,
+                pairs_removed=pairs_set,
+                hastings_ratio=1.0,
+                is_valid=True,
+            )
+
+        return MoveResult(move_type=MoveType.SEGMENT_BIRTH, is_valid=False)
+
+    # Slow exact mode (legacy): compute counts of addable/removable segments.
     # Get current removable segments
     removable = find_removable_segments(matching, segment_index, fixed_pairs)
     n_removable = len(removable)
@@ -196,33 +333,43 @@ def propose_segment_birth_death(
 
     # If neither birth nor death is possible, return invalid
     if n_addable == 0 and n_removable == 0:
-        return MoveResult(
-            move_type=MoveType.SEGMENT_BIRTH,
-            is_valid=False,
-        )
+        return MoveResult(move_type=MoveType.SEGMENT_BIRTH, is_valid=False)
 
-    # Choose birth or death with equal probability if both possible
-    # Otherwise, choose the possible one
-    if n_addable == 0:
-        do_birth = False
-    elif n_removable == 0:
+    # Choose birth or death, optionally forcing a specific type
+    if force_move == MoveType.SEGMENT_BIRTH:
         do_birth = True
+    elif force_move == MoveType.SEGMENT_DEATH:
+        do_birth = False
     else:
-        do_birth = rng.random() < 0.5
+        # Choose birth or death with equal probability if both possible
+        # Otherwise, choose the possible one
+        if n_addable == 0:
+            do_birth = False
+        elif n_removable == 0:
+            do_birth = True
+        else:
+            do_birth = rng.random() < 0.5
 
     if do_birth:
+        if n_addable == 0:
+            return MoveResult(
+                move_type=MoveType.SEGMENT_BIRTH,
+                is_valid=False,
+            )
         # Birth move: select uniformly from addable segments
         seg = addable[rng.randint(0, n_addable - 1)]
         pairs_to_add = set(seg.pairs())
 
-        # After adding, how many segments will be removable?
-        # We need to count removable segments in M' = M ∪ seg
-        # This is an approximation - we add our segment and check
-        n_removable_after = n_removable + 1  # At minimum, the segment we added
+        # After adding, count removable segments in M' = M ∪ seg
+        matching_after = matching | pairs_to_add
+        removable_after = find_removable_segments(
+            matching_after,
+            segment_index,
+            fixed_pairs,
+        )
+        n_removable_after = len(removable_after)
 
         # Hastings ratio for birth: |addable(M)| / |removable(M')|
-        # More precisely: forward = 1/(2*n_addable), reverse = 1/(2*n_removable_after)
-        # But since we choose birth/death with prob 1/2 each, it simplifies
         if n_removable_after == 0:
             hastings = float("inf")  # Should not happen
         else:
@@ -236,12 +383,28 @@ def propose_segment_birth_death(
             is_valid=True,
         )
     else:
+        if n_removable == 0:
+            return MoveResult(
+                move_type=MoveType.SEGMENT_DEATH,
+                is_valid=False,
+            )
         # Death move: select uniformly from removable segments
         seg = removable[rng.randint(0, n_removable - 1)]
         pairs_to_remove = set(seg.pairs())
 
-        # After removing, how many segments will be addable?
-        n_addable_after = n_addable + 1  # At minimum, the segment we removed
+        # After removing, count addable segments in M' = M \ seg
+        matching_after = matching - pairs_to_remove
+        new_partners = list(partners)
+        for i, j in pairs_to_remove:
+            new_partners[i] = -1
+            new_partners[j] = -1
+        addable_after = find_addable_segments(
+            matching_after,
+            new_partners,
+            segment_index,
+            min_hairpin,
+        )
+        n_addable_after = len(addable_after)
 
         # Hastings ratio for death: |removable(M)| / |addable(M')|
         if n_addable_after == 0:
@@ -290,6 +453,7 @@ def propose_segment_swap(
 
     # Get removable segments
     removable = find_removable_segments(matching, segment_index, fixed_pairs)
+    n_removable = len(removable)
     if not removable:
         return MoveResult(
             move_type=MoveType.SEGMENT_SWAP,
@@ -387,8 +551,19 @@ def propose_segment_swap(
             is_valid=False,
         )
 
-    # Hastings ratio: |valid_conflicts| / |valid_reverse|
-    hastings = len(valid_conflicts) / len(valid_reverse)
+    # Count removable segments in M' for the reverse move
+    matching_after = (matching - seg_old_pairs) | seg_new_pairs
+    removable_after = find_removable_segments(matching_after, segment_index, fixed_pairs)
+    n_removable_after = len(removable_after)
+    if n_removable_after == 0:
+        return MoveResult(
+            move_type=MoveType.SEGMENT_SWAP,
+            is_valid=False,
+        )
+
+    # Hastings ratio: (|removable(M)| / |removable(M')|)
+    #                   * (|valid_conflicts| / |valid_reverse|)
+    hastings = (n_removable / n_removable_after) * (len(valid_conflicts) / len(valid_reverse))
 
     return MoveResult(
         move_type=MoveType.SEGMENT_SWAP,
@@ -405,6 +580,8 @@ def propose_loop_closure(
     loop_folds: list[set[tuple[int, int]]],
     weights: dict[tuple[int, int], float],
     rng,
+    min_hairpin: int = 3,
+    fixed_pairs: set[tuple[int, int]] | None = None,
 ) -> MoveResult:
     """Propose a loop closure move.
 
@@ -418,12 +595,66 @@ def propose_loop_closure(
         loop_folds: Precomputed alternative loop foldings
         weights: Weight dictionary
         rng: Random number generator
+        min_hairpin: Minimum hairpin loop size
+        fixed_pairs: Pairs that cannot be removed
 
     Returns:
         MoveResult with proposal details
     """
-    # Placeholder implementation - will be filled in Phase 4
-    raise NotImplementedError("propose_loop_closure not yet implemented")
+    if not loop_folds:
+        return MoveResult(
+            move_type=MoveType.LOOP_CLOSURE,
+            is_valid=False,
+        )
+
+    if fixed_pairs is None:
+        fixed_pairs = set()
+
+    # Select uniformly from all precomputed loop folds.
+    fold_pairs = set(loop_folds[rng.randint(0, len(loop_folds) - 1)])
+
+    if fold_pairs.issubset(matching):
+        # Propose removal of the fold.
+        if any(pair in fixed_pairs for pair in fold_pairs):
+            return MoveResult(
+                move_type=MoveType.LOOP_CLOSURE,
+                is_valid=False,
+            )
+        return MoveResult(
+            move_type=MoveType.LOOP_CLOSURE,
+            pairs_removed=fold_pairs,
+            pairs_added=None,
+            hastings_ratio=1.0,
+            is_valid=True,
+        )
+
+    if fold_pairs & matching:
+        # Overlap would break reversibility (partial fold).
+        return MoveResult(
+            move_type=MoveType.LOOP_CLOSURE,
+            is_valid=False,
+        )
+
+    # Addition: ensure all positions are free and hairpin constraints are met.
+    for i, j in fold_pairs:
+        if partners[i] != -1 or partners[j] != -1:
+            return MoveResult(
+                move_type=MoveType.LOOP_CLOSURE,
+                is_valid=False,
+            )
+        if j - i - 1 < min_hairpin:
+            return MoveResult(
+                move_type=MoveType.LOOP_CLOSURE,
+                is_valid=False,
+            )
+
+    return MoveResult(
+        move_type=MoveType.LOOP_CLOSURE,
+        pairs_added=fold_pairs,
+        pairs_removed=None,
+        hastings_ratio=1.0,
+        is_valid=True,
+    )
 
 
 def select_and_propose_move(
@@ -435,6 +666,7 @@ def select_and_propose_move(
     fixed_pairs: set[tuple[int, int]],
     weights: dict[tuple[int, int], float],
     rng,
+    candidate_index: CandidateEdgeIndex | None = None,
     move_probs: dict[MoveType, float] | None = None,
     min_hairpin: int = 3,
 ) -> MoveResult:
@@ -488,15 +720,45 @@ def select_and_propose_move(
     # Propose the selected move
     if selected_move == MoveType.TOGGLE:
         return propose_toggle(
-            matching, partners, candidate_pairs, fixed_pairs, weights, rng, min_hairpin
+            matching,
+            partners,
+            candidate_pairs,
+            fixed_pairs,
+            weights,
+            rng,
+            min_hairpin,
+            candidate_index=candidate_index,
         )
 
     elif selected_move in (MoveType.SEGMENT_BIRTH, MoveType.SEGMENT_DEATH):
         if segment_index is None or len(segment_index.all_segments) == 0:
             return MoveResult(move_type=selected_move, is_valid=False)
-        return propose_segment_birth_death(
-            matching, partners, segment_index, fixed_pairs, weights, rng, min_hairpin
+        move = propose_segment_birth_death(
+            matching,
+            partners,
+            segment_index,
+            fixed_pairs,
+            weights,
+            rng,
+            min_hairpin,
+            force_move=selected_move,
+            fast_uniform_pool=True,
         )
+        # Include move selection probability ratio if birth/death probs differ.
+        if move.is_valid and move_probs is not None:
+            p_birth = move_probs.get(MoveType.SEGMENT_BIRTH, 0.0)
+            p_death = move_probs.get(MoveType.SEGMENT_DEATH, 0.0)
+            if move.move_type == MoveType.SEGMENT_BIRTH:
+                if p_birth <= 0 or p_death <= 0:
+                    move.is_valid = False
+                else:
+                    move.hastings_ratio *= p_death / p_birth
+            elif move.move_type == MoveType.SEGMENT_DEATH:
+                if p_birth <= 0 or p_death <= 0:
+                    move.is_valid = False
+                else:
+                    move.hastings_ratio *= p_birth / p_death
+        return move
 
     elif selected_move == MoveType.SEGMENT_SWAP:
         if segment_index is None or len(segment_index.all_segments) == 0:
@@ -508,7 +770,15 @@ def select_and_propose_move(
     elif selected_move == MoveType.LOOP_CLOSURE:
         if loop_folds is None or len(loop_folds) == 0:
             return MoveResult(move_type=MoveType.LOOP_CLOSURE, is_valid=False)
-        return propose_loop_closure(matching, partners, loop_folds, weights, rng)
+        return propose_loop_closure(
+            matching,
+            partners,
+            loop_folds,
+            weights,
+            rng,
+            min_hairpin,
+            fixed_pairs=fixed_pairs,
+        )
 
     else:
         return MoveResult(is_valid=False)

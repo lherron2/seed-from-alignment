@@ -225,3 +225,27 @@ class TestSampleMatchingsNew:
         assert len(diagnostics.energy_trace) == 5
         assert MoveType.TOGGLE in diagnostics.total_proposals
         assert diagnostics.total_proposals[MoveType.TOGGLE] > 0
+
+    def test_validate_structures_rejects_invalid(self, monkeypatch) -> None:
+        """Invalid structures are rejected when validation is enabled."""
+        candidate_pairs = [(0, 6, 1.0)]
+        config = SamplerConfig(
+            n_samples=1,
+            burn_in=0,
+            thin=1,
+            seed=42,
+            validate_structures=True,
+        )
+
+        def always_invalid(*args, **kwargs):
+            return False, ["invalid"]
+
+        monkeypatch.setattr(
+            "src.lib.validate_structure.validate_structure",
+            always_invalid,
+        )
+
+        samples, diagnostics = sample_matchings_new(10, candidate_pairs, config)
+
+        assert samples == [set()]
+        assert diagnostics.accepted.get(MoveType.TOGGLE, 0) == 0

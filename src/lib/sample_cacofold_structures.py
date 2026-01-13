@@ -11,8 +11,11 @@ Output .db format:
 import argparse
 import json
 import math
+import multiprocessing as mp
 import random
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from .energy import EnergyParams
@@ -303,6 +306,92 @@ def cov_weight(rec: CovRecord, mode: str = "logE_power") -> float:
 # ------------------ Candidate pairs + weights ------------------ #
 
 
+def extract_candidate_pair_components(
+    seq_name: str,
+    seqs: dict[str, str],
+    ss_tracks: dict[str, str],
+    w_core: float = 2.0,
+    w_alt: float = 1.0,
+    cov: dict[tuple[int, int], CovRecord] | None = None,
+    cov_mode: str = "off",
+    cov_alpha: float = 1.0,
+    cov_min_power: float = 0.0,
+    cov_forbid_negative: bool = False,
+    cov_negative_E: float = 1.0,
+) -> tuple[int, str, dict[str, dict[tuple[int, int], float]]]:
+    if seq_name not in seqs:
+        raise KeyError(f"Sequence '{seq_name}' not in alignment.")
+
+    aligned_seq = seqs[seq_name]
+    aln2seq, L = aln_to_seq_map(aligned_seq)
+    ungapped_seq = "".join(ch for ch in aligned_seq if ch not in GAP_CHARS)
+    tags = [t for t in ss_tracks if t.startswith("SS_cons")]
+
+    if not tags:
+        raise ValueError("No SS_cons* tracks found in the Stockholm file.")
+
+    tags = sorted(tags, key=ss_tag_order)
+
+    core: dict[tuple[int, int], float] = {}
+    alt: dict[tuple[int, int], float] = {}
+    cov_comp: dict[tuple[int, int], float] = {}
+    dropped_noncanonical = 0
+
+    for tag in tags:
+        track = ss_tracks[tag]
+        pairs_aln = pairs_from_track(track)
+        pairs_seq = map_pairs_to_seq(pairs_aln, aln2seq)
+        for i, j in pairs_seq:
+            if i > j:
+                i, j = j, i
+
+            # Enforce canonical WC/GU pairing at the *candidate* level
+            b_i = ungapped_seq[i]
+            b_j = ungapped_seq[j]
+            if not is_canonical_pair(b_i, b_j):
+                dropped_noncanonical += 1
+                continue
+
+            key = (i, j)
+
+            # Base layer-based weight
+            layer_w = w_core if tag == "SS_cons" else w_alt
+            if tag == "SS_cons":
+                core[key] = core.get(key, 0.0) + layer_w
+            else:
+                alt[key] = alt.get(key, 0.0) + layer_w
+
+            # Optional covariation component
+            rec: CovRecord | None = None
+            if cov is not None and cov_mode != "off":
+                rec = cov.get(key)
+
+                if rec is not None:
+                    # Optionally filter on power / negative evidence
+                    if rec.power < cov_min_power:
+                        if cov_forbid_negative:
+                            continue
+
+                    # Negative evidence: high power but weak covariation
+                    if (
+                        cov_forbid_negative
+                        and rec.power >= cov_min_power
+                        and rec.evalue >= cov_negative_E
+                    ):
+                        continue
+
+                    cov_w = cov_weight(rec, mode=cov_mode)
+                    cov_comp[key] = cov_comp.get(key, 0.0) + cov_w
+
+    components = {"core": core, "alt": alt, "cov": cov_comp}
+    if dropped_noncanonical > 0:
+        sys.stderr.write(
+            f"[CaCoFoldSample] Dropped {dropped_noncanonical} "
+            f"non-canonical candidate pair(s) for {seq_name} based on sequence.\n"
+        )
+    return L, ungapped_seq, components
+
+
 def extract_candidate_pairs(
     seq_name: str,
     seqs: dict[str, str],
@@ -341,81 +430,31 @@ def extract_candidate_pairs(
         (power >= cov_min_power and evalue >= cov_negative_E) if
         cov_forbid_negative is True.
     """
-    if seq_name not in seqs:
-        raise KeyError(f"Sequence '{seq_name}' not in alignment.")
+    L, _seq, components = extract_candidate_pair_components(
+        seq_name=seq_name,
+        seqs=seqs,
+        ss_tracks=ss_tracks,
+        w_core=w_core,
+        w_alt=w_alt,
+        cov=cov,
+        cov_mode=cov_mode,
+        cov_alpha=cov_alpha,
+        cov_min_power=cov_min_power,
+        cov_forbid_negative=cov_forbid_negative,
+        cov_negative_E=cov_negative_E,
+    )
 
-    aligned_seq = seqs[seq_name]
-    aln2seq, L = aln_to_seq_map(aligned_seq)
-    ungapped_seq = "".join(ch for ch in aligned_seq if ch not in GAP_CHARS)
-    tags = [t for t in ss_tracks if t.startswith("SS_cons")]
-
-    if not tags:
-        raise ValueError("No SS_cons* tracks found in the Stockholm file.")
-
-    tags = sorted(tags, key=ss_tag_order)
+    core = components.get("core", {})
+    alt = components.get("alt", {})
+    cov_comp = components.get("cov", {})
 
     pair_scores: dict[tuple[int, int], float] = {}
-    dropped_noncanonical = 0
-
-    for tag in tags:
-        track = ss_tracks[tag]
-        pairs_aln = pairs_from_track(track)
-        pairs_seq = map_pairs_to_seq(pairs_aln, aln2seq)
-        for i, j in pairs_seq:
-            if i > j:
-                i, j = j, i
-
-            # Enforce canonical WC/GU pairing at the *candidate* level
-            b_i = ungapped_seq[i]
-            b_j = ungapped_seq[j]
-            if not is_canonical_pair(b_i, b_j):
-                continue
-
-            key = (i, j)
-
-            # Base layer-based weight
-            layer_w = w_core if tag == "SS_cons" else w_alt
-
-            # Optional covariation component
-            cov_w = 0.0
-            rec: CovRecord | None = None
-            if cov is not None and cov_mode != "off":
-                rec = cov.get(key)
-
-                if rec is not None:
-                    # Optionally filter on power / negative evidence
-                    if rec.power < cov_min_power:
-                        if cov_forbid_negative:
-                            # Treat low-power, no-signal pairs as disallowed
-                            continue
-                        # otherwise: just use layer_w
-
-                    # Negative evidence: high power but weak covariation
-                    if (
-                        cov_forbid_negative
-                        and rec.power >= cov_min_power
-                        and rec.evalue >= cov_negative_E
-                    ):
-                        # Drop pairs with strong negative evidence
-                        continue
-
-                    cov_w = cov_weight(rec, mode=cov_mode)
-
-            # Combine layer and cov weights
-            if cov_mode == "off" or rec is None:
-                w = layer_w
-            else:
-                w = layer_w + cov_alpha * cov_w
-
-            pair_scores[key] = pair_scores.get(key, 0.0) + w
-
-    candidate_pairs = [(i, j, w) for (i, j), w in sorted(pair_scores.items())]
-    if dropped_noncanonical > 0:
-        sys.stderr.write(
-            f"[CaCoFoldSample] Dropped {dropped_noncanonical} "
-            f"non-canonical candidate pair(s) for {seq_name} based on sequence.\n"
+    for key in set(core) | set(alt) | set(cov_comp):
+        pair_scores[key] = (
+            core.get(key, 0.0) + alt.get(key, 0.0) + cov_alpha * cov_comp.get(key, 0.0)
         )
 
+    candidate_pairs = [(i, j, w) for (i, j), w in sorted(pair_scores.items())]
     return L, candidate_pairs
 
 
@@ -1015,6 +1054,627 @@ def sample_matchings_modular(
     return samples
 
 
+def _generate_beta_ladder(
+    center_beta: float,
+    n_chains: int,
+    min_factor: float = 0.5,
+    max_factor: float = 2.0,
+) -> list[float]:
+    if n_chains <= 1:
+        return [center_beta]
+    if center_beta <= 0:
+        raise ValueError("center_beta must be > 0")
+    if min_factor <= 0 or max_factor <= 0:
+        raise ValueError("beta factors must be > 0")
+    if min_factor > max_factor:
+        min_factor, max_factor = max_factor, min_factor
+
+    beta_min = center_beta * min_factor
+    beta_max = center_beta * max_factor
+
+    # Geometric spacing is generally better than linear for MH acceptance.
+    ratio = (beta_max / beta_min) ** (1.0 / (n_chains - 1))
+    return [beta_min * (ratio**k) for k in range(n_chains)]
+
+
+def _scaled_move_probs_for_beta(
+    base_probs: dict[MoveType, float],
+    base_beta: float,
+    beta: float,
+    min_scale: float = 0.5,
+    max_scale: float = 2.0,
+) -> dict[MoveType, float]:
+    """
+    Heuristic: hotter chains (smaller beta) get more global moves.
+    We scale non-toggle moves by s = clamp(base_beta / beta).
+    """
+    if beta <= 0 or base_beta <= 0:
+        return dict(base_probs)
+
+    scale = base_beta / beta
+    if scale < min_scale:
+        scale = min_scale
+    if scale > max_scale:
+        scale = max_scale
+
+    toggle = base_probs.get(MoveType.TOGGLE, 0.0)
+    out: dict[MoveType, float] = {MoveType.TOGGLE: 0.0}
+    other_sum = 0.0
+    for mt, p in base_probs.items():
+        if mt == MoveType.TOGGLE:
+            continue
+        sp = max(0.0, p * scale)
+        out[mt] = sp
+        other_sum += sp
+
+    # Keep toggle as the remainder, preserving normalization.
+    # If other moves blow up, renormalize all.
+    total = other_sum + max(0.0, toggle)
+    if total <= 0:
+        return {MoveType.TOGGLE: 1.0}
+
+    # First, set toggle to remainder if possible.
+    rem = 1.0 - other_sum
+    if rem >= 0:
+        out[MoveType.TOGGLE] = rem
+        # Normalize small numeric drift.
+        s = sum(out.values())
+        if s > 0:
+            for k in out:
+                out[k] /= s
+        return out
+
+    # Otherwise renormalize everything.
+    for k in out:
+        out[k] /= other_sum
+    out[MoveType.TOGGLE] = 0.0
+    return out
+
+
+def _partners_from_pairs(pair_set: set[tuple[int, int]], L: int) -> list[int]:
+    partners = [-1] * L
+    for i, j in pair_set:
+        if i > j:
+            i, j = j, i
+        partners[i] = j
+        partners[j] = i
+    return partners
+
+
+def _hamming_partner_distance(a: list[int], b: list[int]) -> int:
+    return sum(x != y for x, y in zip(a, b))
+
+
+def _approx_median_pairwise_hamming(partners_list: list[list[int]], max_pairs: int = 2000) -> float:
+    if len(partners_list) < 2:
+        return 0.0
+    rng = random.Random(0)
+    n = len(partners_list)
+    dists: list[int] = []
+    draws = min(max_pairs, n * (n - 1) // 2)
+    for _ in range(draws):
+        i = rng.randrange(n)
+        j = rng.randrange(n - 1)
+        if j >= i:
+            j += 1
+        dists.append(_hamming_partner_distance(partners_list[i], partners_list[j]))
+    dists.sort()
+    mid = len(dists) // 2
+    return float(dists[mid])
+
+
+def _binary_entropy(p: float) -> float:
+    if p <= 0.0 or p >= 1.0:
+        return 0.0
+    return -(p * math.log(p) + (1.0 - p) * math.log(1.0 - p))
+
+
+def sample_matchings_multibeta_modular(
+    L: int,
+    candidate_pairs: list[tuple[int, int, float]],
+    n_samples: int,
+    burn_in: int = 1000,
+    thin: int = 10,
+    min_hairpin: int = 3,
+    beta: float = 1.0,
+    betas: list[float] | None = None,
+    n_beta_chains: int = 4,
+    beta_min_factor: float = 0.5,
+    beta_max_factor: float = 2.0,
+    seed: int | None = None,
+    pk_alpha: float = 2.0,
+    pk_gamma: float = 0.0,
+    lonely_penalty: float = 0.0,
+    scaffold_pairs: set[tuple[int, int]] | None = None,
+    initial_pairs: set[tuple[int, int]] | None = None,
+    use_segment_moves: bool = True,
+    segment_birth_prob: float = 0.2,
+    segment_death_prob: float = 0.2,
+    segment_swap_prob: float = 0.1,
+    diversity_dist_frac: float = 0.05,
+    pk_filter_frac: float = 0.2,
+    pk_filter_max_cross_per_pair: int = 2,
+    pk_filter_max_total_cross: int = 30,
+    delayed_accept: bool = True,
+    parallel_chains: bool = True,
+    max_workers: int = 8,
+    use_beam_seeds: bool = True,
+    beam_width: int = 64,
+    beam_expansions_per_state: int = 24,
+    beam_max_segments: int = 2000,
+    beam_max_depth: int = 6,
+    diagnostics_file: str | None = None,
+    label: str | None = None,
+) -> tuple[list[set[tuple[int, int]]], dict]:
+    """
+    Multi-beta strategy (no exchange): run short independent chains at different betas,
+    then deduplicate + diversity-filter the union under a fixed output budget.
+
+    `scaffold_pairs` are fixed (always-present) constraints.
+    `initial_pairs` are only used to seed the chain state and are NOT fixed.
+    """
+    if betas is None or len(betas) == 0:
+        betas = _generate_beta_ladder(
+            center_beta=beta,
+            n_chains=n_beta_chains,
+            min_factor=beta_min_factor,
+            max_factor=beta_max_factor,
+        )
+    betas = [float(b) for b in betas if b is not None]
+    if not betas:
+        betas = [beta]
+
+    # Distribute samples (and burn-in) across chains so total compute stays similar.
+    if n_samples <= 0:
+        return [], {"label": label, "L": L, "n_requested": n_samples, "n_returned": 0}
+
+    n_chains = min(len(betas), n_samples)
+    betas = betas[:n_chains]
+    base_burn_in = max(0, int(burn_in))
+    burn_in_each = max(50, base_burn_in // n_chains) if n_chains > 1 else base_burn_in
+
+    base = n_samples // n_chains
+    rem = n_samples % n_chains
+    n_samples_each = [base + (1 if k < rem else 0) for k in range(n_chains)]
+
+    # Build energy parameters base (beta per-chain below).
+    base_energy_params = EnergyParams(
+        beta=beta,
+        pk_alpha=pk_alpha,
+        pk_gamma=pk_gamma,
+        lonely_penalty=lonely_penalty,
+        hairpin_min=min_hairpin,
+    )
+
+    # Base move probabilities (temperature-scaled per chain).
+    toggle_prob = 1.0 - segment_birth_prob - segment_death_prob - segment_swap_prob
+    base_move_probs: dict[MoveType, float] = {
+        MoveType.TOGGLE: max(0.0, toggle_prob),
+        MoveType.SEGMENT_BIRTH: max(0.0, segment_birth_prob),
+        MoveType.SEGMENT_DEATH: max(0.0, segment_death_prob),
+        MoveType.SEGMENT_SWAP: max(0.0, segment_swap_prob),
+    }
+
+    # Precompute segment index once (shared across chains) only if needed.
+    segment_index = None
+    if use_segment_moves or use_beam_seeds:
+        all_pairs = [(i, j) for i, j, _ in candidate_pairs]
+        segment_index = build_candidate_segments(all_pairs, min_len=2, max_len=10)
+
+    # Weight lookup used for energy and PK pruning postprocess.
+    pair_weights: dict[tuple[int, int], float] = {}
+    for i, j, w in candidate_pairs:
+        if i > j:
+            i, j = j, i
+        pair_weights[(i, j)] = w
+
+    # Optional beam/constructive seeding to give each chain a distinct macro-state.
+    beam_seeds: list[set[tuple[int, int]]] = []
+    if use_beam_seeds and segment_index is not None and segment_index.all_segments_list:
+        beam_seeds = beam_seed_segments(
+            L=L,
+            segment_index=segment_index,
+            pair_weights=pair_weights,
+            scaffold_pairs=set(scaffold_pairs or set()),
+            min_hairpin=min_hairpin,
+            n_seeds=n_chains,
+            diversity_dist_frac=diversity_dist_frac,
+            beam_width=beam_width,
+            expansions_per_state=beam_expansions_per_state,
+            max_segments=beam_max_segments,
+            max_depth=beam_max_depth,
+        )
+
+    t0 = time.perf_counter()
+    all_samples_with_energy: list[
+        tuple[set[tuple[int, int]], float, float]
+    ] = []  # (pairs, E, beta)
+    per_chain_reports: list[dict] = []
+
+    tasks: list[dict] = []
+    for chain_idx, (b, ns) in enumerate(zip(betas, n_samples_each, strict=False)):
+        if ns <= 0:
+            continue
+        chain_seed = int(seed) + 100_000 * chain_idx if seed is not None else None
+        init_pairs = None
+        if initial_pairs is not None:
+            init_pairs = set(initial_pairs)
+        elif beam_seeds:
+            init_pairs = beam_seeds[chain_idx % len(beam_seeds)]
+        tasks.append(
+            {
+                "chain_idx": chain_idx,
+                "beta": float(b),
+                "n_samples": int(ns),
+                "burn_in": int(burn_in_each),
+                "thin": int(thin),
+                "seed": chain_seed,
+                "move_probs": _scaled_move_probs_for_beta(base_move_probs, base_beta=beta, beta=b),
+                "initial_pairs": init_pairs,
+            }
+        )
+
+    # Run chains (parallel or sequential).
+    chain_results: list[dict] = []
+    if parallel_chains and len(tasks) > 1 and max_workers > 1:
+        try:
+            ctx = mp.get_context("fork")
+        except ValueError:
+            ctx = None
+
+        if ctx is None:
+            chain_results = [
+                _run_chain_task(
+                    task,
+                    L=L,
+                    candidate_pairs=candidate_pairs,
+                    scaffold_pairs=scaffold_pairs,
+                    segment_index=segment_index if use_segment_moves else None,
+                    pair_weights=pair_weights,
+                    base_energy_params=base_energy_params,
+                    delayed_accept=delayed_accept,
+                )
+                for task in tasks
+            ]
+        else:
+            # Set globals for forked workers to avoid pickling large data per task.
+            _CHAIN_GLOBALS["L"] = L
+            _CHAIN_GLOBALS["candidate_pairs"] = candidate_pairs
+            _CHAIN_GLOBALS["scaffold_pairs"] = scaffold_pairs
+            _CHAIN_GLOBALS["segment_index"] = segment_index if use_segment_moves else None
+            _CHAIN_GLOBALS["pair_weights"] = pair_weights
+            _CHAIN_GLOBALS["base_energy_params"] = base_energy_params
+            _CHAIN_GLOBALS["delayed_accept"] = delayed_accept
+
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=min(int(max_workers), len(tasks)),
+                    mp_context=ctx,
+                ) as ex:
+                    futures = [ex.submit(_run_chain_task_global, task) for task in tasks]
+                    for fut in as_completed(futures):
+                        chain_results.append(fut.result())
+            except (PermissionError, OSError) as exc:
+                # Some environments disallow process-based parallelism (e.g. blocked semaphores).
+                # Fall back to sequential chain execution.
+                sys.stderr.write(
+                    f"[WARN] Chain parallelism unavailable ({exc}); running chains sequentially.\n"
+                )
+                chain_results = [
+                    _run_chain_task(
+                        task,
+                        L=L,
+                        candidate_pairs=candidate_pairs,
+                        scaffold_pairs=scaffold_pairs,
+                        segment_index=segment_index if use_segment_moves else None,
+                        pair_weights=pair_weights,
+                        base_energy_params=base_energy_params,
+                        delayed_accept=delayed_accept,
+                    )
+                    for task in tasks
+                ]
+    else:
+        chain_results = [
+            _run_chain_task(
+                task,
+                L=L,
+                candidate_pairs=candidate_pairs,
+                scaffold_pairs=scaffold_pairs,
+                segment_index=segment_index if use_segment_moves else None,
+                pair_weights=pair_weights,
+                base_energy_params=base_energy_params,
+                delayed_accept=delayed_accept,
+            )
+            for task in tasks
+        ]
+
+    chain_results.sort(key=lambda r: r["chain_idx"])
+    for res in chain_results:
+        b = res["beta"]
+        for s, e in zip(res["samples"], res["energies"], strict=False):
+            all_samples_with_energy.append((s, float(e), float(b)))
+        per_chain_reports.append(res["report"])
+
+    # Deduplicate by structure (pair set), keeping best (lowest) energy.
+    best_by_struct: dict[frozenset[tuple[int, int]], tuple[float, float, set[tuple[int, int]]]] = {}
+    for s, e, b in all_samples_with_energy:
+        fs = frozenset(s)
+        prev = best_by_struct.get(fs)
+        if prev is None or e < prev[0]:
+            best_by_struct[fs] = (e, b, s)
+
+    uniques = [(e, b, s) for (e, b, s) in best_by_struct.values()]
+    uniques.sort(key=lambda x: x[0])  # by energy
+
+    # Diversity filtering on partner vectors.
+    threshold = max(1, int(round(diversity_dist_frac * L)))
+    kept: list[set[tuple[int, int]]] = []
+    kept_partners: list[list[int]] = []
+
+    for e, b, s in uniques:
+        p = _partners_from_pairs(s, L)
+        if all(_hamming_partner_distance(p, q) > threshold for q in kept_partners):
+            kept.append(s)
+            kept_partners.append(p)
+            if len(kept) >= n_samples:
+                break
+
+    # If diversity filter is too strict, fill by best energy.
+    if len(kept) < n_samples:
+        kept_fs = {frozenset(s) for s in kept}
+        for e, b, s in uniques:
+            if len(kept) >= n_samples:
+                break
+            if frozenset(s) in kept_fs:
+                continue
+            kept.append(s)
+            kept_partners.append(_partners_from_pairs(s, L))
+
+    # Postprocess: enforce PK thresholds only on final output (avoid O(n^2) in the loop).
+    out: list[set[tuple[int, int]]] = []
+    pk_stats_out: list[dict] = []
+    for s in kept:
+        pruned = prune_pseudoknots(
+            set(s),
+            pair_weights=pair_weights,
+            L=L,
+            pk_filter_frac=pk_filter_frac,
+            pk_filter_max_cross_per_pair=pk_filter_max_cross_per_pair,
+            pk_filter_max_total_cross=pk_filter_max_total_cross,
+            fixed_pairs=set(scaffold_pairs or set()),
+        )
+        out.append(pruned)
+        pk_pairs, _cc, total_cross, max_cross = compute_pk_stats_for_set(pruned)
+        pk_stats_out.append(
+            {
+                "pk_pairs": len(pk_pairs),
+                "total_crossings": total_cross,
+                "max_crossings": max_cross,
+            }
+        )
+
+    elapsed = time.perf_counter() - t0
+
+    # Diversity summary
+    out_partners = [_partners_from_pairs(s, L) for s in out]
+    median_hamming = _approx_median_pairwise_hamming(out_partners)
+
+    # Pair entropy on observed pairs (in final output)
+    edge_counts: dict[tuple[int, int], int] = {}
+    for s in out:
+        for i, j in s:
+            if i > j:
+                i, j = j, i
+            edge_counts[(i, j)] = edge_counts.get((i, j), 0) + 1
+
+    k = max(1, len(out))
+    mean_edge_entropy = 0.0
+    if edge_counts:
+        mean_edge_entropy = sum(_binary_entropy(c / k) for c in edge_counts.values()) / len(
+            edge_counts
+        )
+
+    report = {
+        "label": label,
+        "L": L,
+        "n_requested": n_samples,
+        "n_returned": len(out),
+        "n_total_raw": len(all_samples_with_energy),
+        "n_unique_raw": len(uniques),
+        "betas": betas,
+        "beam_seeds_used": bool(beam_seeds),
+        "burn_in_each": burn_in_each,
+        "thin": thin,
+        "wall_seconds": elapsed,
+        "steps_per_chain": burn_in_each + thin * max(n_samples_each) if n_samples_each else 0,
+        "diversity": {
+            "hamming_threshold": threshold,
+            "median_pairwise_hamming_approx": median_hamming,
+            "median_pairwise_hamming_frac_approx": median_hamming / float(L) if L else 0.0,
+            "mean_observed_edge_entropy_nats": mean_edge_entropy,
+        },
+        "pk_out": pk_stats_out,
+        "chains": per_chain_reports,
+    }
+
+    if diagnostics_file:
+        with open(diagnostics_file, "w") as f:
+            json.dump(report, f, indent=2)
+        sys.stderr.write(f"[INFO] Wrote sampler diagnostics to {diagnostics_file}\n")
+
+    return out, report
+
+
+_CHAIN_GLOBALS: dict[str, object] = {}
+
+
+def _run_chain_task(
+    task: dict,
+    *,
+    L: int,
+    candidate_pairs: list[tuple[int, int, float]],
+    scaffold_pairs: set[tuple[int, int]] | None,
+    segment_index,
+    pair_weights: dict[tuple[int, int], float],
+    base_energy_params: EnergyParams,
+    delayed_accept: bool,
+) -> dict:
+    chain_idx = int(task["chain_idx"])
+    b = float(task["beta"])
+    ns = int(task["n_samples"])
+    burn_in = int(task["burn_in"])
+    thin = int(task["thin"])
+    chain_seed = task.get("seed")
+    move_probs = task.get("move_probs")
+    initial_pairs = task.get("initial_pairs")
+
+    energy_params = EnergyParams(**base_energy_params.__dict__)
+    energy_params.beta = b
+
+    cfg = SamplerConfig(
+        n_samples=ns,
+        burn_in=burn_in,
+        thin=thin,
+        seed=chain_seed,
+        energy_params=energy_params,
+        move_probs=move_probs,
+        min_hairpin=base_energy_params.hairpin_min,
+        validate_structures=False,
+        delayed_accept=delayed_accept,
+    )
+
+    samples, diagnostics = sample_matchings_new(
+        length=L,
+        candidate_pairs=candidate_pairs,
+        config=cfg,
+        scaffold_pairs=scaffold_pairs,
+        initial_pairs=initial_pairs,
+        segment_index=segment_index,
+        weights=pair_weights,
+    )
+
+    return {
+        "chain_idx": chain_idx,
+        "beta": b,
+        "samples": samples,
+        "energies": list(diagnostics.energy_trace),
+        "report": {
+            "chain_idx": chain_idx,
+            "beta": b,
+            "n_samples": len(samples),
+            "burn_in": burn_in,
+            "thin": thin,
+            "seed": chain_seed,
+            "initial_pairs_size": len(initial_pairs) if initial_pairs else 0,
+            "summary": diagnostics.summary(),
+            "move_probs": {mt.name: float(move_probs.get(mt, 0.0)) for mt in MoveType}
+            if isinstance(move_probs, dict)
+            else None,
+        },
+    }
+
+
+def _run_chain_task_global(task: dict) -> dict:
+    return _run_chain_task(
+        task,
+        L=_CHAIN_GLOBALS["L"],
+        candidate_pairs=_CHAIN_GLOBALS["candidate_pairs"],
+        scaffold_pairs=_CHAIN_GLOBALS["scaffold_pairs"],
+        segment_index=_CHAIN_GLOBALS["segment_index"],
+        pair_weights=_CHAIN_GLOBALS["pair_weights"],
+        base_energy_params=_CHAIN_GLOBALS["base_energy_params"],
+        delayed_accept=_CHAIN_GLOBALS["delayed_accept"],
+    )
+
+
+def beam_seed_segments(
+    *,
+    L: int,
+    segment_index,
+    pair_weights: dict[tuple[int, int], float],
+    scaffold_pairs: set[tuple[int, int]],
+    min_hairpin: int,
+    n_seeds: int,
+    diversity_dist_frac: float,
+    beam_width: int,
+    expansions_per_state: int,
+    max_segments: int,
+    max_depth: int,
+) -> list[set[tuple[int, int]]]:
+    """
+    Constructive beam search over helical segments to generate diverse initial states.
+
+    Returns a list of initial (non-scaffold) pair sets.
+    """
+    segments = segment_index.all_segments_list
+    if not segments or n_seeds <= 0:
+        return []
+
+    seg_pool = []
+    for seg in segments:
+        score = 0.0
+        ok = True
+        for i, j in seg.pairs():
+            if (j - i - 1) < min_hairpin:
+                ok = False
+                break
+            score += pair_weights.get((i, j) if i < j else (j, i), 0.0)
+        if ok and score > 0:
+            seg_pool.append((score, seg))
+
+    seg_pool.sort(key=lambda x: x[0], reverse=True)
+    seg_pool = seg_pool[: max(1, int(max_segments))]
+    if not seg_pool:
+        return []
+
+    seg_pairs = [set(seg.pairs()) for _score, seg in seg_pool]
+    seg_positions = [seg.positions() for _score, seg in seg_pool]
+    seg_scores = [float(score) for score, _seg in seg_pool]
+
+    scaffold_occ = {p for pair in scaffold_pairs for p in pair}
+    base_pairs = set(scaffold_pairs)
+
+    # Beam state: (score, pairs_set, occupied_positions_set)
+    beam: list[tuple[float, set[tuple[int, int]], set[int]]] = [(0.0, base_pairs, scaffold_occ)]
+
+    for _depth in range(max_depth):
+        candidates: list[tuple[float, set[tuple[int, int]], set[int]]] = []
+        for score, pairs_set, occ in beam:
+            added = 0
+            for idx in range(len(seg_pool)):
+                if added >= expansions_per_state:
+                    break
+                if seg_positions[idx] & occ:
+                    continue
+                new_pairs = pairs_set | seg_pairs[idx]
+                new_occ = occ | seg_positions[idx]
+                candidates.append((score + seg_scores[idx], new_pairs, new_occ))
+                added += 1
+        if not candidates:
+            break
+        # Keep top beam_width candidates (plus current beam to allow early stop)
+        merged = beam + candidates
+        merged.sort(key=lambda x: x[0], reverse=True)
+        beam = merged[: max(1, int(beam_width))]
+
+    # Extract best candidates and enforce diversity.
+    beam.sort(key=lambda x: x[0], reverse=True)
+    threshold = max(1, int(round(diversity_dist_frac * L)))
+    seeds: list[set[tuple[int, int]]] = []
+    seed_partners: list[list[int]] = []
+
+    for _score, pairs_set, _occ in beam:
+        init = set(pairs_set) - scaffold_pairs
+        partners = _partners_from_pairs(pairs_set, L)
+        if all(_hamming_partner_distance(partners, p) > threshold for p in seed_partners):
+            seeds.append(init)
+            seed_partners.append(partners)
+            if len(seeds) >= n_seeds:
+                break
+
+    return seeds
+
+
 # ------------------ CLI ------------------------------------------ #
 
 
@@ -1169,12 +1829,18 @@ def main() -> None:
         help="Limit the pseudoknot depth during sampling (e.g. 1 = 1 crossing layer).",
     )
     # ---- New modular sampler options ----
-    parser.add_argument(
+    sampler_group = parser.add_mutually_exclusive_group()
+    sampler_group.add_argument(
+        "--legacy-sampler",
+        action="store_true",
+        help="Use the legacy sampler (deprecated; not detailed-balance-correct).",
+    )
+    sampler_group.add_argument(
         "--use-new-sampler",
         action="store_true",
         help=(
-            "Use the new modular MCMC sampler with proper delta energy computation, "
-            "segment moves for better mixing, and guaranteed detailed balance."
+            "Use the new modular MCMC sampler (default). This flag is deprecated "
+            "and kept for compatibility."
         ),
     )
     parser.add_argument(
@@ -1303,8 +1969,14 @@ def main() -> None:
         )
         sys.stderr.write(f"[INFO] Wrote CaCoFold summary to {args.summary}\n")
 
+    use_new_sampler = True
+    if args.legacy_sampler:
+        use_new_sampler = False
+    elif args.use_new_sampler:
+        use_new_sampler = True
+
     # Sample structures
-    if args.use_new_sampler:
+    if use_new_sampler:
         sys.stderr.write("[INFO] Using new modular MCMC sampler\n")
         samples = sample_matchings_modular(
             L=L,
@@ -1325,6 +1997,7 @@ def main() -> None:
             diagnostics_file=args.diagnostics,
         )
     else:
+        sys.stderr.write("[WARN] Using legacy sampler (detailed balance not guaranteed)\n")
         samples = sample_matchings(
             L=L,
             candidate_pairs=candidate_pairs,

@@ -1,0 +1,56 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsmath}
+
+\title{FR3D/BGSU Representative Set Benchmark (Length $\le 400$, non-rRNA)}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Benchmark definition}
+This report evaluates secondary-structure prediction quality on the FR3D/BGSU representative set under the following constraints:
+\begin{itemize}
+  \item Truth is extracted from 3D structures using Barnaba canonical base-pair annotations (WC and GU).
+  \item Targets are filtered to truth length $\le 400$ nucleotides and at least 5 canonical base pairs (to avoid degenerate empty-truth metrics).
+  \item Ribosomal RNAs (rRNAs) are excluded (protein-partner confounders).
+  \item Metrics are reported for the top-1 prediction and the best structure within the top-$K$ list, with $K=100$.
+\end{itemize}
+
+\section{Algorithm overview}
+For each target sequence, the predictor:
+\begin{enumerate}
+  \item Runs Infernal \texttt{cmscan} to select a covariance model (CM) and aligns the sequence with \texttt{cmalign}.
+  \item Runs R-scape CaCoFold to produce an initial consensus scaffold (when covariation signal is present).
+  \item Refines unpaired regions using RNAstructure-generated candidates and heuristic masking/search.
+  \item Samples additional structures with an MCMC sampler over base-pair moves, returning a diverse top-$K$ list.
+  \item Uses a length-adaptive compute schedule (scaled budgets for long RNAs; up to 5 minutes refinement for $\ge 300$ nt).
+\end{enumerate}
+
+\section{Results}
+\input{generated/tables/overall.tex}
+
+\input{generated/tables/by_length_bucket.tex}
+
+\input{generated/tables/by_rfam_hit.tex}
+
+\input{generated/tables/top_rfam.tex}
+
+\input{generated/tables/worst_targets.tex}
+
+\input{generated/tables/biggest_improvements.tex}
+
+\section{Appendix: by-family breakdown}
+\input{generated/tables/by_rfam_top1_longtable.tex}
+
+\input{generated/tables/by_rfam_top100_longtable.tex}
+
+\end{document}
+

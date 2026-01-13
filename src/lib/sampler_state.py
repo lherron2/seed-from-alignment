@@ -142,6 +142,7 @@ class SamplerState:
 def create_initial_state(
     length: int,
     fixed_pairs: set[tuple[int, int]] | None = None,
+    initial_pairs: set[tuple[int, int]] | None = None,
     weights: dict[tuple[int, int], float] | None = None,
     params: EnergyParams | None = None,
 ) -> SamplerState:
@@ -173,10 +174,27 @@ def create_initial_state(
         partners[i] = j
         partners[j] = i
 
+    # Add initial (non-fixed) pairs on top of fixed pairs.
+    # These are part of the starting state but are still movable unless also in fixed_pairs.
+    initial_set: set[tuple[int, int]] = set()
+    if initial_pairs:
+        for i, j in initial_pairs:
+            if i > j:
+                i, j = j, i
+            if (i, j) in normalized_fixed:
+                continue
+            if params is not None and (j - i - 1) < params.hairpin_min:
+                raise ValueError("initial_pairs violate hairpin constraint")
+            if partners[i] != -1 or partners[j] != -1:
+                raise ValueError("initial_pairs conflict with existing fixed/initial pairs")
+            partners[i] = j
+            partners[j] = i
+            initial_set.add((i, j))
+
     # Build initial caches
     from .pk import build_pk_cache
 
-    pk_cache = build_pk_cache(normalized_fixed)
+    pk_cache = build_pk_cache(normalized_fixed | initial_set)
 
     # Compute initial energy cache
     # For now, use default cache - will be updated when energy module is complete
@@ -184,7 +202,7 @@ def create_initial_state(
 
     return SamplerState(
         length=length,
-        pair_set=set(normalized_fixed),  # Copy to avoid aliasing
+        pair_set=set(normalized_fixed | initial_set),  # Copy to avoid aliasing
         partners=partners,
         energy_cache=energy_cache,
         pk_cache=pk_cache,

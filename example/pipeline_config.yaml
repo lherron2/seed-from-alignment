@@ -1,73 +1,83 @@
-# Example pipeline config for seed-from-alignment
-#
-# This is designed to run inside the `example/` directory with the CaCoFold
-# outputs from the 9E5I cobalamin riboswitch test case.
-#
-# You can use YAML (as shown here) or JSON; the CLI will auto-detect based
-# on the file extension.
+# example/pipeline_config.yaml
 
-# --- CaCoFold inputs ---
-sto: combined_1.cacofold.sto
-cov: combined_1.cacofold.cov
-sto: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.sto
-cov: /home/lukas/research/seed-from-alignment/seed-from-alignment/example/combined_1.cacofold.cov
-seq_name: "9E5I_1_Chains"   # sequence ID in the .sto file
+# -----------------------------------------------------------------------------
+# Input & Executables
+# -----------------------------------------------------------------------------
+sto: "../vegf/vegf_1.cacofold.sto"
+cov: "../vegf/vegf_1.cacofold.cov"  # Optional R-scape covariation file
+seq_name: "vegf"
 
-#fold_exe: "/path/to/RNAstructure/exe/Fold"
+# Paths to RNAstructure executables (Required for refinement)
 allsub_exe: "/home/lukas/research/RNAstructure/exe/AllSub"
-#duplex_exe: "/path/to/RNAstructure/exe/DuplexFold"
 duplex_exe: "/home/lukas/research/RNAstructure/exe/DuplexFold"
 
-# --- Sampling parameters (pk sampler) ---
+# -----------------------------------------------------------------------------
+# Output Paths
+# -----------------------------------------------------------------------------
+io:
+  work_dir: "../vegf/output"
+  consensus_db: "00_consensus.db"
+  refined_db: "01_refined.db"
+  sampled_db: "02_sampled.db"
+  rosetta_db: "04_rosetta.db"
+  summary: "summary.txt"
+
+# -----------------------------------------------------------------------------
+# 1. Sampling Configuration (CaCoFold + Metropolis PK Sampling)
+# -----------------------------------------------------------------------------
 sample:
   n_samples: 1
-  burn_in: 1000
-  thin: 100
-  min_loop_sep: 2
-  beta: 1
-  seed: 0
-  pk_alpha: 2
-  pk_filter_frac: 0.025
-  pk_filter_max_cross_per_pair: 4
-  pk_filter_max_total_cross: 20
-  pk_depth_limit: 1
+  burn_in: 2000
+  thin: 10
+  beta: 1.0
+  seed: 42
+  min_loop_sep: 1
+  
+  # Pseudoknot Complexity Filters
+  pk_alpha: 2.0
+  pk_filter_frac: 0.2
+  pk_filter_max_cross_per_pair: 2
+  pk_filter_max_total_cross: 30
+  
+  # Covariation Weighting (Optional)
+  cov_mode: "logE"
+  cov_alpha: 3
 
-  cov_mode: "logE"          # "off", "score", "power", ...
-  cov_alpha: 3.0
-  cov_min_power: 1.0
-  cov_forbid_negative: False
-  cov_negative_E: 1.0
-
-# --- Refinement of long unpaired regions (RNAstructure Fold / DuplexFold) ---
+# -----------------------------------------------------------------------------
+# 2. Refinement Configuration (Unpaired Regions -> AllSub/DuplexFold)
+# -----------------------------------------------------------------------------
 refine:
-  min_unpaired: 3               # internal '.' stretch length to trigger Fold
-#  min_terminal_unpaired: 4      # 5'/3' terminal '.' stretch for DuplexFold
-  temperature: 310              # null => use RNAstructure default
-  allsub_abs: 1               # Max absolute free energy difference
-  #allsub_pct: 100               # Max percent energy difference
-  fold_extra_args: []            # e.g. ["-si", "SHAPE.dat"]
+  min_unpaired: 4
+  temperature: 310.15    # Kelvin (37 C)
+  max_structures: 500000   # Max unique structures to output after refinement
+  
+  # --- Consensus Masking Grid ---
+  # Controls how aggressively we strip parts of the consensus to force exploration
+  end_mask_step: 5           # Step size (nt) for incrementally unpairing 5' and 3' ends
+  max_end_mask_len: 40       # Max length (nt) to unpair from either end
+  max_helices_sequential: 20 # Top N helices to attempt removing one-by-one
+  max_helices_pairwise: 10   # Top N helices to attempt removing in pairs
 
-# --- Plausibility filter (ensure_valid) ---
-ensure_valid:
-  max_total_crossings: 20
-  max_crossings_per_pair: 4
-  max_pk_fraction: 0.20
+  # --- Initialization Seeds ---
+  max_seeds: 50              # Max global 5'-3' interaction seeds to compute per mask variant
 
-# --- Rosetta-ready / clustering ---
+  allsub_abs: 15
+
+  # --- Combinatorial Heuristics ---
+  max_regions_to_refine: 40  # Safety cap: only refine the N largest unpaired runs
+  max_solutions: 20000        # Max combinatorial solutions to keep per search track
+  kissing_loop_candidates: 200000 # Number of top refined structures to scan for kissing loops
+
+  # --- Topology-Aware Scoring Weights ---
+  # Final Score = Sum(Weight(Layer) * Energy)
+  scaffold_pair_energy: -1.5 # Pseudo-energy (kcal/mol) assigned to fixed scaffold pairs
+  weight_l0: 1.0             # Weight for Nested pairs (Layer 0)
+  weight_l1: 0.6             # Weight for PK Layer 1 (minor penalty/reduced stability)
+  weight_l2_plus: -1.0       # Weight for PK Layer 2+ (Major penalty)
+
+# -----------------------------------------------------------------------------
+# 3. Rosetta Conversion & Deduplication
+# -----------------------------------------------------------------------------
 rosetta:
-  hamming_threshold: 0
-  hamming_frac: 0.0
-  max_structures: 1000
-
-# --- I/O layout ---
-io:
-  work_dir: "./pipeline_output"
-
-  # These are relative to work_dir:
-  consensus_db: "9E5I_consensus.db"
-  refined_db: "9E5I_refined_consensus.db"
-  sampled_db: "9E5I_sampled.db"
-  valid_db: "9E5I_sampled_valid.db"
-  rosetta_db: "9E5I_sampled_rosetta.db"
-  summary: "9E5I_summary_new.txt"
-
+  hamming_threshold: 0       # 0 = Exact duplicates only
+  hamming_frac: 0.05         # Fraction of length allowed to differ (if threshold > 0)

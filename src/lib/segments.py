@@ -99,6 +99,7 @@ class SegmentIndex:
     """
 
     all_segments: set[Segment] = field(default_factory=set)
+    all_segments_list: list[Segment] = field(default_factory=list)
     segment_by_pair: dict[tuple[int, int], set[Segment]] = field(default_factory=dict)
     conflicts: dict[Segment, set[Segment]] = field(default_factory=dict)
     length: int = 0
@@ -219,8 +220,11 @@ def build_candidate_segments(
     for i, j in pairs_set:
         max_pos = max(max_pos, i, j)
 
+    seg_list = sorted(segments, key=lambda s: (s.length, s.start5, s.start3), reverse=True)
+
     return SegmentIndex(
         all_segments=segments,
+        all_segments_list=seg_list,
         segment_by_pair=segment_by_pair,
         conflicts=conflicts,
         length=max_pos + 1,

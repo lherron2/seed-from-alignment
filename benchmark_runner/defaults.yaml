@@ -1,0 +1,138 @@
+dataset:
+  # BGSU representative set release ID (or "current")
+  release_id: "current"
+  # Resolution cutoff string for BGSU downloads
+  resolution: "4.0"
+  # Minimum length filter for FASTA-derived manifest
+  min_length: 30
+  # Maximum length filter for FASTA-derived manifest
+  max_length: 300
+  # Length bucket boundaries for reporting
+  length_buckets:
+    - [30, 80]
+    - [81, 150]
+    - [151, 300]
+    - [301, 1000]
+  # Seed for deterministic split assignment
+  split_seed: 0
+  # Drop targets with missing Rfam labels (BGSU full list only)
+  drop_missing_rfam: false
+  # If Rfam missing, fall back to equivalence class split
+  fallback_to_ec: false
+
+score:
+  # Helix overlap threshold for helix-level hits
+  helix_overlap_threshold: 0.5
+  # Default number of structures to score per target
+  k: 20
+
+paths:
+  # Rfam covariance model database
+  rfam_cm: "/home/lukas/research/seed-from-alignment/seed-from-alignment-claude/benchmark_runner/data/rfam/Rfam.cm"
+  # Infernal bin directory (cmscan/cmfetch/cmalign)
+  infernal_bin: "/home/lukas/research/seed-from-alignment/seed-from-alignment-claude/infernal-1.1.5/src"
+  # R-scape binary path (R-scape)
+  rscape: "/home/lukas/research/seed-from-alignment/seed-from-alignment-claude/rscape_v2.6.4/src/R-scape"
+  rnastructure:
+    # RNAstructure AllSub executable
+    allsub: "/home/lukas/research/RNAstructure/exe/AllSub"
+    # RNAstructure DuplexFold executable
+    duplex: "/home/lukas/research/RNAstructure/exe/DuplexFold"
+    # RNAstructure Fold (MFE) executable
+    fold: "/home/lukas/research/RNAstructure/exe/Fold"
+    # RNAstructure Partition executable (PF)
+    partition: "/home/lukas/research/RNAstructure/exe/Partition"
+    # RNAstructure ProbabilityPlot executable (PF)
+    probplot: "/home/lukas/research/RNAstructure/exe/ProbabilityPlot"
+    # RNAstructure DATAPATH (thermodynamics tables)
+    datapath: "/home/lukas/research/RNAstructure/data_tables"
+
+predict:
+  # Number of top structures to emit
+  top_k: 100
+  # Enable length-aware compute allocation for long RNAs (151-300 nt).
+  # This increases refinement/sampling budgets and reduces over-reliance on early refined ordering.
+  length_adaptive: true
+  # Run an extra sampling pass with fix_scaffold_pairs=False (defaults to true when length_adaptive=true).
+  include_unfixed_sampling: true
+  # Cap the number of refined scaffolds used as MCMC starts (scaled up for long RNAs).
+  max_scaffolds: 20
+  # Cap the number of MCMC samples per scaffold (scaled up for long RNAs).
+  max_samples_per_scaffold: 200
+  # MCMC samples to draw
+  n_samples: 1000
+  # MCMC burn-in steps
+  burn_in: 1000
+  # MCMC thinning factor
+  thin: 100
+  # MCMC inverse temperature
+  beta: 1.0
+  # RNG seed
+  seed: 0
+  # Minimum separation for base pairs.
+  # Set to 0 to disable the hairpin/loop-separation constraint in MCMC.
+  min_loop_sep: 0
+  # Pseudoknot penalty coefficient in the MCMC energy.
+  pk_alpha: 0.5
+  # Optional per-base-pair cost added in ranking (lower is less sparse).
+  # If omitted, the predictor auto-calibrates from the weight scale.
+  pair_penalty: null
+  # If pair_penalty is null, set it to this × median(candidate_pair_weight).
+  pair_penalty_scale: 0.25
+  # How to derive default per-pair penalty when pair_penalty is null.
+  pair_penalty_mode: "length_aware"
+  # Length-aware pair penalty coefficients.
+  pair_penalty_c0: 0.10
+  pair_penalty_c1: 0.50
+  pair_penalty_min: null
+  pair_penalty_max: null
+  # Covariation weight mode
+  cov_mode: "logE"
+  # Covariation weight scale
+  cov_alpha: 3.0
+  # Minimum covariation power threshold
+  cov_min_power: 0.1
+  # Drop negative covariation weights when true
+  cov_forbid_negative: false
+  # Weight calibration (normalize components before blending)
+  weight_calibration_method: "robust_z"
+  weight_calibration_zmax: 3.0
+  weight_alpha_core: 1.0
+  weight_alpha_alt: 1.0
+  weight_alpha_cov: 1.0
+  weight_alpha_thermo: 1.0
+  # Thermo evidence mode: pf (Partition/ProbabilityPlot), allsub, off
+  thermo_mode: "pf"
+  thermo_weight: 1.0
+  thermo_max_structures: 50
+  thermo_min_count: 2
+  thermo_min_prob: 0.001
+  thermo_log_eps: 1.0e-6
+  # Helix-aware ranking priors (scaled by weight scale)
+  stem_start_penalty_scale: 0.05
+  stem_len1_penalty_scale: 0.10
+  stem_len2_penalty_scale: 0.02
+  stem_log_reward_scale: 0.02
+  stem_support_quantile: 0.5
+  # Optional per-target wall-clock budget (seconds) for refinement; prevents hangs.
+  refine_max_seconds: 30
+  # Max number of refined structures to keep per scaffold
+  refine_max_structures: 200
+  # Minimum unpaired run length to refine
+  refine_min_unpaired: 6
+  # Step size for terminal masking
+  refine_end_mask_step: 20
+  # Max length of terminal masks
+  refine_max_end_mask_len: 10
+  # Max number of helices to drop sequentially
+  refine_max_helices_sequential: 20
+  # Max number of helix pairs to drop
+  refine_max_helices_pairwise: 20
+  # Max number of unpaired regions to refine per scaffold
+  refine_max_regions: 4
+  # Max number of 5'/3' end-to-end seeds per mask
+  refine_max_seeds: 100
+  # Cap on solutions per refinement track
+  refine_max_solutions: 100
+  # Kissing-loop candidates to evaluate
+  refine_kissing_candidates: 100

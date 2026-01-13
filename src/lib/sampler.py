@@ -14,9 +14,11 @@ See spec/06_SAMPLER_MODULE.md for detailed specification.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .candidate_index import CandidateEdgeIndex
 from .energy import EnergyParams
 from .moves import MoveType
 from .segments import SegmentIndex
@@ -53,6 +55,7 @@ class SamplerConfig:
     move_probs: dict[MoveType, float] | None = None
     min_hairpin: int = 3
     validate_structures: bool = False
+    delayed_accept: bool = True
 
 
 @dataclass
@@ -70,6 +73,10 @@ class SamplerDiagnostics:
     accepted: dict[MoveType, int] = field(default_factory=dict)
     energy_trace: list[float] = field(default_factory=list)
     sample_sizes: list[int] = field(default_factory=list)
+    pk_pairs_count: list[int] = field(default_factory=list)
+    pk_max_crossings: list[int] = field(default_factory=list)
+    wall_seconds: float = 0.0
+    total_steps: int = 0
 
     def record_move(
         self,
@@ -90,6 +97,8 @@ class SamplerDiagnostics:
         self,
         energy: float,
         matching_size: int,
+        pk_pairs_count: int = 0,
+        pk_max_crossings: int = 0,
     ) -> None:
         """Record state at sample time.
 
@@ -99,6 +108,8 @@ class SamplerDiagnostics:
         """
         self.energy_trace.append(energy)
         self.sample_sizes.append(matching_size)
+        self.pk_pairs_count.append(pk_pairs_count)
+        self.pk_max_crossings.append(pk_max_crossings)
 
     def acceptance_rate(self, move_type: MoveType) -> float:
         """Get acceptance rate for a move type.
@@ -125,8 +136,32 @@ class SamplerDiagnostics:
         if len(self.energy_trace) < 2:
             return float(len(self.energy_trace))
 
-        # Placeholder - will implement autocorrelation-based ESS
-        return float(len(self.energy_trace))
+        # Autocorrelation-based ESS estimator on the energy trace.
+        # For short chains this is noisy; it's mainly a regression signal.
+        x = self.energy_trace
+        n = len(x)
+        if n < 3:
+            return float(n)
+
+        mean = sum(x) / n
+        var = sum((v - mean) ** 2 for v in x) / (n - 1)
+        if var <= 0:
+            return float(n)
+
+        def autocov(lag: int) -> float:
+            return sum((x[t] - mean) * (x[t + lag] - mean) for t in range(n - lag)) / (n - 1)
+
+        tau = 1.0
+        # Stop when correlation becomes negative (initial positive sequence).
+        for lag in range(1, min(n // 2, 2000)):
+            rho = autocov(lag) / var
+            if rho <= 0:
+                break
+            tau += 2.0 * rho
+
+        ess = n / max(1.0, tau)
+        # Guard against numerical weirdness.
+        return float(max(1.0, min(n, ess)))
 
     def summary(self) -> dict[str, Any]:
         """Generate summary statistics.
@@ -136,6 +171,8 @@ class SamplerDiagnostics:
         """
         return {
             "n_samples": len(self.energy_trace),
+            "total_steps": self.total_steps,
+            "wall_seconds": self.wall_seconds,
             "acceptance_rates": {
                 mt.name: self.acceptance_rate(mt)
                 for mt in MoveType
@@ -148,6 +185,12 @@ class SamplerDiagnostics:
             "mean_size": sum(self.sample_sizes) / len(self.sample_sizes)
             if self.sample_sizes
             else 0.0,
+            "mean_pk_pairs": sum(self.pk_pairs_count) / len(self.pk_pairs_count)
+            if self.pk_pairs_count
+            else 0.0,
+            "mean_pk_max_crossings": sum(self.pk_max_crossings) / len(self.pk_max_crossings)
+            if self.pk_max_crossings
+            else 0.0,
         }
 
 
@@ -156,8 +199,10 @@ def sample_matchings_new(
     candidate_pairs: list[tuple[int, int, float]],
     config: SamplerConfig,
     scaffold_pairs: set[tuple[int, int]] | None = None,
+    initial_pairs: set[tuple[int, int]] | None = None,
     segment_index: SegmentIndex | None = None,
     loop_folds: list[set[tuple[int, int]]] | None = None,
+    weights: dict[tuple[int, int], float] | None = None,
 ) -> tuple[list[set[tuple[int, int]]], SamplerDiagnostics]:
     """Sample matchings using MCMC with correct detailed balance.
 
@@ -178,19 +223,20 @@ def sample_matchings_new(
     import math
     import random
 
-    from .energy import compute_delta_energy, compute_energy
+    from .energy import compute_delta_energy, compute_delta_energy_no_pk, compute_energy
     from .moves import select_and_propose_move
     from .sampler_state import create_initial_state
 
     if scaffold_pairs is None:
         scaffold_pairs = set()
 
-    # Build weight dictionary
-    weights: dict[tuple[int, int], float] = {}
-    for i, j, w in candidate_pairs:
-        if i > j:
-            i, j = j, i
-        weights[(i, j)] = w
+    # Build weight dictionary (can be passed in to avoid repeated work across chains)
+    if weights is None:
+        weights = {}
+        for i, j, w in candidate_pairs:
+            if i > j:
+                i, j = j, i
+            weights[(i, j)] = w
 
     # Initialize RNG
     rng = random.Random(config.seed)
@@ -199,6 +245,7 @@ def sample_matchings_new(
     state = create_initial_state(
         length=length,
         fixed_pairs=scaffold_pairs,
+        initial_pairs=initial_pairs,
         weights=weights,
         params=config.energy_params,
     )
@@ -211,10 +258,19 @@ def sample_matchings_new(
 
     # Diagnostics
     diagnostics = SamplerDiagnostics()
+    candidate_index = CandidateEdgeIndex(
+        length=length,
+        candidate_pairs=candidate_pairs,
+        partners=state.partners,
+        fixed_pairs=state.fixed_pairs,
+        min_hairpin=config.min_hairpin,
+    )
 
     # Calculate total steps
     total_steps = config.burn_in + config.n_samples * config.thin
     samples: list[set[tuple[int, int]]] = []
+    diagnostics.total_steps = total_steps
+    t0 = time.perf_counter()
 
     for step in range(total_steps):
         # Use select_and_propose_move to select from available move types
@@ -227,6 +283,7 @@ def sample_matchings_new(
             fixed_pairs=state.fixed_pairs,
             weights=weights,
             rng=rng,
+            candidate_index=candidate_index,
             move_probs=config.move_probs,
             min_hairpin=config.min_hairpin,
         )
@@ -234,73 +291,188 @@ def sample_matchings_new(
         accepted = False
 
         if move.is_valid:
-            # Compute delta energy for all pairs in the move
-            delta_e = 0.0
-            current_cache = state.energy_cache
-            temp_matching = set(state.pair_set)
+            # Optional structural validation on the proposed final matching.
+            if config.validate_structures:
+                from .validate_structure import pairs_to_structure, validate_structure
 
-            # Process removed pairs first
-            if move.pairs_removed:
-                for edge in move.pairs_removed:
-                    i, j = edge
-                    if i > j:
-                        i, j = j, i
-                    edge_delta, current_cache = compute_delta_energy(
-                        (i, j),
-                        temp_matching,
-                        weights,
-                        config.energy_params,
-                        current_cache,
-                        is_add=False,
-                    )
-                    delta_e += edge_delta
-                    temp_matching.discard((i, j))
-
-            # Then process added pairs
-            if move.pairs_added:
-                for edge in move.pairs_added:
-                    i, j = edge
-                    if i > j:
-                        i, j = j, i
-                    edge_delta, current_cache = compute_delta_energy(
-                        (i, j),
-                        temp_matching,
-                        weights,
-                        config.energy_params,
-                        current_cache,
-                        is_add=True,
-                    )
-                    delta_e += edge_delta
-                    temp_matching.add((i, j))
-
-            # Metropolis-Hastings acceptance
-            # A = min(1, exp(-beta * delta_E) * hastings_ratio)
-            log_accept = -config.energy_params.beta * delta_e
-            log_accept += (
-                math.log(move.hastings_ratio) if move.hastings_ratio > 0 else float("-inf")
-            )
-
-            if log_accept >= 0 or rng.random() < math.exp(log_accept):
-                accepted = True
-                # Apply the move
+                dummy_seq = "A" * length
+                temp_matching_final = set(state.pair_set)
                 if move.pairs_removed:
                     for i, j in move.pairs_removed:
-                        state.remove_pair(i, j)
+                        if i > j:
+                            i, j = j, i
+                        temp_matching_final.discard((i, j))
                 if move.pairs_added:
                     for i, j in move.pairs_added:
-                        state.add_pair(i, j)
-                state.energy_cache = current_cache
-                assert current_cache.pk_cache is not None
-                state.pk_cache = current_cache.pk_cache
-                energy = current_cache.total_energy
+                        if i > j:
+                            i, j = j, i
+                        temp_matching_final.add((i, j))
+
+                struct = pairs_to_structure(sorted(temp_matching_final), length)
+                is_valid, _ = validate_structure(
+                    dummy_seq,
+                    struct,
+                    allow_pk=True,
+                    min_hairpin=config.min_hairpin,
+                    allow_lonely_pairs=True,
+                    canonical_only=False,
+                )
+                if not is_valid:
+                    move.is_valid = False
+
+            if move.is_valid:
+                if config.delayed_accept:
+                    # Stage 1: cheap energy (no PK terms)
+                    delta_fast = 0.0
+                    fast_cache = state.energy_cache
+                    temp_matching = set(state.pair_set)
+
+                    if move.pairs_removed:
+                        for i, j in move.pairs_removed:
+                            if i > j:
+                                i, j = j, i
+                            edge_delta_fast, fast_cache = compute_delta_energy_no_pk(
+                                (i, j),
+                                temp_matching,
+                                weights,
+                                config.energy_params,
+                                fast_cache,
+                                is_add=False,
+                            )
+                            delta_fast += edge_delta_fast
+                            temp_matching.discard((i, j))
+
+                    if move.pairs_added:
+                        for i, j in move.pairs_added:
+                            if i > j:
+                                i, j = j, i
+                            edge_delta_fast, fast_cache = compute_delta_energy_no_pk(
+                                (i, j),
+                                temp_matching,
+                                weights,
+                                config.energy_params,
+                                fast_cache,
+                                is_add=True,
+                            )
+                            delta_fast += edge_delta_fast
+                            temp_matching.add((i, j))
+
+                    log_accept1 = -config.energy_params.beta * delta_fast
+                    log_accept1 += (
+                        math.log(move.hastings_ratio) if move.hastings_ratio > 0 else float("-inf")
+                    )
+
+                    if log_accept1 >= 0 or rng.random() < math.exp(log_accept1):
+                        # Stage 2: compute full delta only for stage-1-accepted proposals.
+                        delta_e = 0.0
+                        current_cache = state.energy_cache
+                        temp_matching_full = set(state.pair_set)
+
+                        if move.pairs_removed:
+                            for i, j in move.pairs_removed:
+                                if i > j:
+                                    i, j = j, i
+                                edge_delta, current_cache = compute_delta_energy(
+                                    (i, j),
+                                    temp_matching_full,
+                                    weights,
+                                    config.energy_params,
+                                    current_cache,
+                                    is_add=False,
+                                )
+                                delta_e += edge_delta
+                                temp_matching_full.discard((i, j))
+
+                        if move.pairs_added:
+                            for i, j in move.pairs_added:
+                                if i > j:
+                                    i, j = j, i
+                                edge_delta, current_cache = compute_delta_energy(
+                                    (i, j),
+                                    temp_matching_full,
+                                    weights,
+                                    config.energy_params,
+                                    current_cache,
+                                    is_add=True,
+                                )
+                                delta_e += edge_delta
+                                temp_matching_full.add((i, j))
+
+                        correction = delta_e - delta_fast
+                        log_accept2 = -config.energy_params.beta * correction
+                        if log_accept2 >= 0 or rng.random() < math.exp(log_accept2):
+                            accepted = True
+                else:
+                    # Standard Metropolis-Hastings acceptance
+                    delta_e = 0.0
+                    current_cache = state.energy_cache
+                    temp_matching = set(state.pair_set)
+
+                    if move.pairs_removed:
+                        for i, j in move.pairs_removed:
+                            if i > j:
+                                i, j = j, i
+                            edge_delta, current_cache = compute_delta_energy(
+                                (i, j),
+                                temp_matching,
+                                weights,
+                                config.energy_params,
+                                current_cache,
+                                is_add=False,
+                            )
+                            delta_e += edge_delta
+                            temp_matching.discard((i, j))
+
+                    if move.pairs_added:
+                        for i, j in move.pairs_added:
+                            if i > j:
+                                i, j = j, i
+                            edge_delta, current_cache = compute_delta_energy(
+                                (i, j),
+                                temp_matching,
+                                weights,
+                                config.energy_params,
+                                current_cache,
+                                is_add=True,
+                            )
+                            delta_e += edge_delta
+                            temp_matching.add((i, j))
+
+                    log_accept = -config.energy_params.beta * delta_e
+                    log_accept += (
+                        math.log(move.hastings_ratio) if move.hastings_ratio > 0 else float("-inf")
+                    )
+                    if log_accept >= 0 or rng.random() < math.exp(log_accept):
+                        accepted = True
+
+                if accepted:
+                    # Apply the move
+                    if move.pairs_removed:
+                        for i, j in move.pairs_removed:
+                            state.remove_pair(i, j)
+                            candidate_index.apply_remove_pair(i, j, state.partners)
+                    if move.pairs_added:
+                        for i, j in move.pairs_added:
+                            state.add_pair(i, j)
+                            candidate_index.apply_add_pair(i, j, state.partners)
+                    state.energy_cache = current_cache
+                    assert current_cache.pk_cache is not None
+                    state.pk_cache = current_cache.pk_cache
+                    energy = current_cache.total_energy
 
         diagnostics.record_move(move.move_type, accepted)
 
         # Collect sample after burn-in at thinning interval
         if step >= config.burn_in and (step - config.burn_in) % config.thin == 0:
-            diagnostics.record_state(energy, len(state.pair_set))
+            diagnostics.record_state(
+                energy,
+                len(state.pair_set),
+                pk_pairs_count=len(state.pk_cache.pk_pairs),
+                pk_max_crossings=state.pk_cache.max_crossings,
+            )
             samples.append(set(state.pair_set))
 
+    diagnostics.wall_seconds = time.perf_counter() - t0
     return samples, diagnostics
 
 

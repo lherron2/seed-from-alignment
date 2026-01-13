@@ -29,6 +29,7 @@ __all__ = [
     "EnergyCache",
     "compute_energy",
     "compute_delta_energy",
+    "compute_delta_energy_no_pk",
     "normalize_weights",
 ]
 
@@ -333,6 +334,59 @@ def compute_delta_energy(
         hairpin_violations=cache.hairpin_violations,
     )
 
+    return delta_energy, new_cache
+
+
+def compute_delta_energy_no_pk(
+    edge: tuple[int, int],
+    matching: set[tuple[int, int]],
+    weights: dict[tuple[int, int], float],
+    params: EnergyParams,
+    cache: EnergyCache,
+    is_add: bool,
+) -> tuple[float, EnergyCache]:
+    """
+    Cheap delta energy that ignores pseudoknot terms (pk_alpha/pk_gamma).
+
+    Intended for delayed-acceptance MH stage 1. This function is exact for the
+    approximate target π̂(M) ∝ exp(-β · E_no_pk(M)), and stage 2 corrects to the
+    full target using the PK difference.
+    """
+    i, j = edge
+    if i > j:
+        edge = (j, i)
+        i, j = edge
+
+    edge_weight = weights.get(edge, 0.0)
+
+    if is_add:
+        delta_weight = -edge_weight
+        new_weight_sum = cache.weight_sum + edge_weight
+        if params.lonely_penalty > 0:
+            _, delta_lonely = _is_lonely_after_add(edge, matching)
+            new_lonely = cache.lonely_count + delta_lonely
+        else:
+            delta_lonely = 0
+            new_lonely = cache.lonely_count
+    else:
+        delta_weight = edge_weight
+        new_weight_sum = cache.weight_sum - edge_weight
+        if params.lonely_penalty > 0:
+            _, delta_lonely = _is_lonely_after_remove(edge, matching)
+            new_lonely = cache.lonely_count + delta_lonely
+        else:
+            delta_lonely = 0
+            new_lonely = cache.lonely_count
+
+    delta_energy = delta_weight + params.lonely_penalty * delta_lonely
+
+    new_cache = EnergyCache(
+        total_energy=cache.total_energy + delta_energy,
+        weight_sum=new_weight_sum,
+        pk_cache=cache.pk_cache,
+        lonely_count=new_lonely,
+        hairpin_violations=cache.hairpin_violations,
+    )
     return delta_energy, new_cache
 
 
