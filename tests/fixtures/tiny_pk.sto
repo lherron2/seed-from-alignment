@@ -1,0 +1,8 @@
+# STOCKHOLM 1.0
+#=GF ID tiny_pk_test
+
+test_seq1   GGCCAAUUGGCCAAUUCC
+test_seq2   GGCCAAUUGGCCAAUUCC
+#=GC SS_cons ((((....))))......
+#=GC SS_cons_1 ............[[..]]
+//

@@ -1,0 +1,16 @@
+\begin{table}[ht]
+\centering
+\caption{Pearson correlation of features with per-target F1 (higher magnitude indicates stronger relationship).}
+\label{tab:correlations}
+\begin{tabular}{lrr}
+\toprule
+Feature & Corr(F1@1) & Corr(F1@100) \\
+\midrule
+\texttt{\detokenize{truth_len}} & -0.206 & -0.392 \\
+\texttt{\detokenize{ref_pairs}} & 0.052 & -0.064 \\
+\texttt{\detokenize{ref_pair_density}} & 0.486 & 0.554 \\
+\texttt{\detokenize{ref_pk_pairs}} & -0.030 & -0.120 \\
+\texttt{\detokenize{pk_frac}} & -0.010 & -0.061 \\
+\bottomrule
+\end{tabular}
+\end{table}

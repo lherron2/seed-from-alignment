@@ -1,0 +1,31 @@
+[project]
+name = "ssbench"
+version = "0.1.0"
+description = "Reproducible benchmark runner for RNA secondary structure prediction"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "ssbench"}]
+dependencies = [
+  "requests",
+  "pandas",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+extra = [
+  "barnaba",
+  "gemmi",
+]
+
+[project.scripts]
+ssbench = "ssbench.cli:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ssbench = ["py.typed"]

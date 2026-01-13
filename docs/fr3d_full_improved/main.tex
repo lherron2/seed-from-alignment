@@ -1,0 +1,126 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\title{FR3D/BGSU Representative Set Benchmark (Length $\le 400$, non-rRNA) --- Improved Pipeline}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Benchmark definition}
+This report evaluates secondary-structure prediction quality on the FR3D/BGSU representative set under the following constraints:
+\begin{itemize}
+  \item Truth is extracted from 3D structures using Barnaba canonical base-pair annotations (WC and GU).
+  \item Targets are filtered to truth length $\le 400$ nucleotides and at least 5 canonical base pairs (to avoid degenerate empty-truth metrics).
+  \item Ribosomal RNAs (rRNAs) are excluded (protein-partner confounders).
+  \item Metrics are reported for the top-1 prediction and the best structure within the top-$K$ list, with $K=100$.
+\end{itemize}
+
+\section{Reference run}
+The previous report is \texttt{docs/fr3d\_full/main.pdf}. This report (\texttt{docs/fr3d\_full\_improved/main.pdf}) uses the same manifest/truth set, but predictions were regenerated with the updated predictor pipeline.
+
+\section{Pipeline changes}
+Changes relative to the previous run are concentrated in the predictor input handling and the selection/seeding strategy for weak-evidence targets:
+\begin{enumerate}
+  \item \textbf{FASTA sanitization: preserve ambiguity.} The benchmark truth sequences can include \texttt{X} (unknown/modified base) and \texttt{\&} (Barnaba fragment separator). The new pipeline preserves \texttt{X} and only replaces tool-invalid separators like \texttt{\&} with \texttt{N} for downstream tools (while keeping length stable).
+  \begin{itemize}
+    \item Predictor sanitization: \texttt{benchmark\_runner/src/ssbench/predict/cacofold\_mcmc\_pipeline.py}
+    \item CLI FASTA writing: \texttt{benchmark\_runner/src/ssbench/cli.py}
+  \end{itemize}
+
+  \item \textbf{Seed-boost gating: only when needed.} ``Seed boost'' (injecting extra thermo-derived seeds) now triggers only when sanitization had to replace illegal characters (e.g. \texttt{\&}) or when covariation/model evidence is missing, rather than triggering on benign ambiguity (\texttt{X}).
+
+  \item \textbf{No-Rfam-hit selection balance.} For \texttt{no\_rfam\_hit} targets (fallback MFE scaffold), the selector preserves a larger prefix of refined candidates while still reserving budget for diverse thermo seeds, and the thermo seed pick is spread across a mid-energy band (rather than only the earliest AllSub candidates).
+\end{enumerate}
+
+\section{Results}
+\input{generated/tables/comparison_vs_prev.tex}
+
+\input{generated/tables/overall.tex}
+
+\input{generated/tables/by_length_bucket.tex}
+
+\input{generated/tables/by_rfam_hit.tex}
+
+\input{generated/tables/top_rfam.tex}
+
+\input{generated/tables/worst_targets.tex}
+
+\input{generated/tables/biggest_improvements.tex}
+
+\section{Distributions (CDF)}
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.92\textwidth,
+  height=0.50\textwidth,
+  xmin=0, xmax=1,
+  ymin=0, ymax=1,
+  grid=both,
+  grid style={line width=.1pt, draw=gray!20},
+  major grid style={line width=.2pt,draw=gray!35},
+  xlabel={F1},
+  ylabel={CDF},
+  legend style={at={(0.98,0.02)},anchor=south east},
+]
+\addplot[blue, dashed, thick] table [x=prev_top1, y=frac, col sep=comma] {generated/cdf_f1_comparison.csv};
+\addlegendentry{Prev @1}
+\addplot[blue, solid, thick] table [x=prev_top100, y=frac, col sep=comma] {generated/cdf_f1_comparison.csv};
+\addlegendentry{Prev @100}
+\addplot[orange, dashed, thick] table [x=improved_top1, y=frac, col sep=comma] {generated/cdf_f1_comparison.csv};
+\addlegendentry{Improved @1}
+\addplot[orange, solid, thick] table [x=improved_top100, y=frac, col sep=comma] {generated/cdf_f1_comparison.csv};
+\addlegendentry{Improved @100}
+\end{axis}
+\end{tikzpicture}
+\caption{CDF of per-target F1 for top-1 and best-of-100 predictions, comparing \texttt{docs/fr3d\_full/} (previous) vs \texttt{docs/fr3d\_full\_improved/} (improved).}
+\label{fig:cdf_f1}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.92\textwidth,
+  height=0.50\textwidth,
+  xmin=0, xmax=1,
+  ymin=0, ymax=1,
+  grid=both,
+  grid style={line width=.1pt, draw=gray!20},
+  major grid style={line width=.2pt,draw=gray!35},
+  xlabel={MCC},
+  ylabel={CDF},
+  legend style={at={(0.98,0.02)},anchor=south east},
+]
+\addplot[blue, dashed, thick] table [x=prev_top1, y=frac, col sep=comma] {generated/cdf_mcc_comparison.csv};
+\addlegendentry{Prev @1}
+\addplot[blue, solid, thick] table [x=prev_top100, y=frac, col sep=comma] {generated/cdf_mcc_comparison.csv};
+\addlegendentry{Prev @100}
+\addplot[orange, dashed, thick] table [x=improved_top1, y=frac, col sep=comma] {generated/cdf_mcc_comparison.csv};
+\addlegendentry{Improved @1}
+\addplot[orange, solid, thick] table [x=improved_top100, y=frac, col sep=comma] {generated/cdf_mcc_comparison.csv};
+\addlegendentry{Improved @100}
+\end{axis}
+\end{tikzpicture}
+\caption{CDF of per-target MCC for top-1 and best-of-100 predictions, comparing \texttt{docs/fr3d\_full/} (previous) vs \texttt{docs/fr3d\_full\_improved/} (improved).}
+\label{fig:cdf_mcc}
+\end{figure}
+
+\section{Appendix: by-family breakdown}
+\input{generated/tables/by_rfam_top1_longtable.tex}
+
+\input{generated/tables/by_rfam_top100_longtable.tex}
+
+\end{document}
+

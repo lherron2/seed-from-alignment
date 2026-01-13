@@ -1,0 +1,26 @@
+\begin{table}[ht]
+\centering
+\caption{Comparison to previous run (\texttt{docs/fr3d\_full/}). Positive $\Delta$ indicates improvement in this report (\texttt{docs/fr3d\_full\_improved/}).}
+\label{tab:comparison_prev}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Previous & Improved & $\Delta$ \\
+\midrule
+F1@1 mean & 0.636 & 0.640 & +0.004 \\
+F1@100 mean & 0.784 & 0.794 & +0.010 \\
+F1@1 median & 0.701 & 0.704 & +0.003 \\
+F1@100 median & 0.872 & 0.875 & +0.003 \\
+MCC@1 mean & 0.644 & 0.647 & +0.004 \\
+MCC@100 mean & 0.790 & 0.800 & +0.010 \\
+Frac(F1@100\,$\ge$\,0.7) & 73.13\% & 74.63\% & +1.49\% \\
+Frac(F1@100\,$\ge$\,0.9) & 43.03\% & 42.79\% & -0.25\% \\
+Median rank(best@100) & 29.0 & 30.0 & +1.0 \\
+P90 rank(best@100) & 85.0 & 87.0 & +2.0 \\
+Frac(rank(best@100)\,$\le$\,10) & 30.47\% & 30.22\% & -0.25\% \\
+$\Delta$F1 mean & 0.148 & 0.155 & +0.006 \\
+Count(F1@1\,=\,0) & 37 & 36 & -1 \\
+Count(F1@100\,=\,0) & 10 & 3 & -7 \\
+Count(F1@100\,$\le$\,0.2) & 23 & 14 & -9 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,23 @@
+\begin{table}[ht]
+\centering
+\caption{Overall performance on the FR3D/BGSU representative benchmark (N=804, best-of-100).}
+\label{tab:overall}
+\begin{tabular}{lcc}
+\toprule
+Metric & Top-1 & Best-of-100 \\
+\midrule
+Mean Precision & 0.588 & 0.754 \\
+Mean Recall & 0.727 & 0.844 \\
+Mean F1 & 0.636 & 0.784 \\
+Median F1 & 0.701 & 0.872 \\
+Mean MCC & 0.644 & 0.790 \\
+Mean $\Delta$F1 & \multicolumn{2}{c}{0.148} \\
+Min \#preds & \multicolumn{2}{c}{1} \\
+Median rank(best@100) & \multicolumn{2}{c}{29.0} \\
+Frac(rank(best@100)$\le 10$) & \multicolumn{2}{c}{30.47\%} \\
+Frac($\Delta$F1$\ge 0.3$) & \multicolumn{2}{c}{13.81\%} \\
+Frac(best-of-100 F1$\ge0.7$) & \multicolumn{2}{c}{73.13\%} \\
+Frac(best-of-100 F1$\ge0.9$) & \multicolumn{2}{c}{43.03\%} \\
+\bottomrule
+\end{tabular}
+\end{table}

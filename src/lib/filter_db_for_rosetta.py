@@ -6,10 +6,9 @@ and convert them to Rosetta-compatible dot-parens notation.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-from typing import Dict, List, Tuple, Iterable, Sequence
 import sys
-import string
+from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 GAP_CHARS = set("-._~")
 
@@ -17,7 +16,8 @@ GAP_CHARS = set("-._~")
 OPEN_TO_CLOSE_LAYER = {"(": ")", "[": "]", "{": "}"}
 CLOSE_TO_OPEN_LAYER = {v: k for k, v in OPEN_TO_CLOSE_LAYER.items()}
 
-def pairs_cross(p: Tuple[int, int], q: Tuple[int, int]) -> bool:
+
+def pairs_cross(p: tuple[int, int], q: tuple[int, int]) -> bool:
     """
     Return True if arcs (i, j) and (k, l) cross (pseudoknot).
     """
@@ -30,12 +30,12 @@ def pairs_cross(p: Tuple[int, int], q: Tuple[int, int]) -> bool:
     return (i < k < j < l) or (k < i < l < j)
 
 
-def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+def pairs_to_layers(pairs: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
     """
     Given a list of pairs (i, j), partition them into layers so that
     within each layer there are no crossing arcs.
     """
-    layers: List[List[Tuple[int, int]]] = []
+    layers: list[list[tuple[int, int]]] = []
 
     for p in sorted(pairs):
         placed = False
@@ -50,11 +50,12 @@ def pairs_to_layers(pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]
 
     return layers
 
+
 def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
     """
     Read the ungapped RNA sequence for `seq_name` from a Stockholm (.sto) file.
     """
-    sequences: Dict[str, List[str]] = {}
+    sequences: dict[str, list[str]] = {}
 
     with path.open() as fh:
         for raw in fh:
@@ -81,10 +82,7 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
     else:
         if seq_name not in sequences:
             available = ", ".join(sorted(sequences.keys()))
-            raise ValueError(
-                f"Sequence '{seq_name}' not found in {path}. "
-                f"Available: {available}"
-            )
+            raise ValueError(f"Sequence '{seq_name}' not found in {path}. Available: {available}")
         name = seq_name
 
     aligned = "".join(sequences[name])
@@ -96,12 +94,13 @@ def read_ungapped_seq_from_sto(path: Path, seq_name: str | None = None) -> str:
 # Sequence + base-pair helpers
 # -------------------------------------------------------------
 
+
 def read_fasta_sequence(path: Path) -> str:
     """
     Read a single sequence from a FASTA file and return it as an
     uppercase RNA string (T converted to U) with no whitespace.
     """
-    seq_lines: List[str] = []
+    seq_lines: list[str] = []
     with path.open() as fh:
         for line in fh:
             line = line.strip()
@@ -120,6 +119,7 @@ def is_complementary(base1: str, base2: str, allow_wobble: bool = True) -> bool:
     """
     Heuristic complementarity check mimicking Rosetta's expectations.
     """
+
     def _norm(b: str) -> str:
         b = b.upper()
         if b == "T":
@@ -177,11 +177,12 @@ def prune_noncomplementary_pairs(
 # I/O helpers
 # -------------------------------------------------------------
 
-def read_db_structures(path: Path) -> List[str]:
+
+def read_db_structures(path: Path) -> list[str]:
     """
     Read structures from a .db file.
     """
-    structs: List[str] = []
+    structs: list[str] = []
     sequence: str | None = None
 
     with path.open() as fh:
@@ -202,6 +203,7 @@ def read_db_structures(path: Path) -> List[str]:
 
     return structs
 
+
 def write_db_structures(
     path: Path,
     structs: Iterable[str],
@@ -220,6 +222,7 @@ def write_db_structures(
 # -------------------------------------------------------------
 # Filtering / clustering
 # -------------------------------------------------------------
+
 
 def hamming_leq(a: str, b: str, threshold: int) -> bool:
     if len(a) != len(b):
@@ -266,9 +269,9 @@ def merge_by_hamming(
     return reps
 
 
-def deduplicate(structs: List[str]) -> List[str]:
+def deduplicate(structs: list[str]) -> list[str]:
     seen = set()
-    out: List[str] = []
+    out: list[str] = []
     for s in structs:
         if s not in seen:
             seen.add(s)
@@ -280,11 +283,12 @@ def deduplicate(structs: List[str]) -> List[str]:
 # Parsing CaCoFold-style pairs and mapping to Rosetta
 # -------------------------------------------------------------
 
-def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
+
+def _parse_pairs(struct: str) -> list[tuple[int, int, str]]:
     """
     Parse a generic CaCoFold-style dot-bracket string into pairs.
     """
-    OPEN_TO_CLOSE: Dict[str, str] = {
+    OPEN_TO_CLOSE: dict[str, str] = {
         "(": ")",
         "[": "]",
         "{": "}",
@@ -292,10 +296,10 @@ def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
         **{chr(ord("a") + i): chr(ord("A") + i) for i in range(26)},
     }
 
-    CLOSE_TO_OPEN: Dict[str, str] = {v: k for k, v in OPEN_TO_CLOSE.items()}
+    CLOSE_TO_OPEN: dict[str, str] = {v: k for k, v in OPEN_TO_CLOSE.items()}
 
-    stacks: Dict[str, List[int]] = {op: [] for op in OPEN_TO_CLOSE}
-    pairs: List[Tuple[int, int, str]] = []
+    stacks: dict[str, list[int]] = {op: [] for op in OPEN_TO_CLOSE}
+    pairs: list[tuple[int, int, str]] = []
 
     for idx, ch in enumerate(struct):
         if ch in OPEN_TO_CLOSE:
@@ -314,15 +318,11 @@ def _parse_pairs(struct: str) -> List[Tuple[int, int, str]]:
         elif ch == ".":
             continue
         else:
-            raise ValueError(
-                f"Unexpected character '{ch}' in structure."
-            )
+            raise ValueError(f"Unexpected character '{ch}' in structure.")
 
     for op, st in stacks.items():
         if st:
-            raise ValueError(
-                f"Unmatched opening '{op}' at positions {st} in structure:\n{struct}"
-            )
+            raise ValueError(f"Unmatched opening '{op}' at positions {st} in structure:\n{struct}")
 
     return pairs
 
@@ -333,7 +333,7 @@ def convert_to_rosetta_notation(struct: str) -> str:
     """
     parsed = _parse_pairs(struct)
     pairs = [(i, j) for i, j, _ in parsed]
-    
+
     # Sanity check: Ensure input structure didn't contain overlapping pairs
     indices = [idx for pair in pairs for idx in pair]
     if len(indices) != len(set(indices)):
@@ -341,28 +341,29 @@ def convert_to_rosetta_notation(struct: str) -> str:
 
     n = len(struct)
     layers = pairs_to_layers(pairs)
-    
+
     new_chars = ["."] * n
-    
+
     rosetta_brackets = [("(", ")"), ("[", "]"), ("{", "}")]
     rosetta_brackets += [(chr(ord("a") + i), chr(ord("A") + i)) for i in range(26)]
-    
+
     for layer_idx, layer_pairs in enumerate(layers):
         if layer_idx < len(rosetta_brackets):
             op, cl = rosetta_brackets[layer_idx]
         else:
             op, cl = "{", "}"
-            
+
         for i, j in layer_pairs:
             new_chars[i] = op
             new_chars[j] = cl
-            
+
     return "".join(new_chars)
 
 
 # -------------------------------------------------------------
 # Main CLI
 # -------------------------------------------------------------
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
@@ -393,7 +394,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if threshold == 0:
         if args.hamming_frac > 0.0:
             threshold = max(1, int(round(args.hamming_frac * L)))
-    
+
     if threshold > 0:
         structs = merge_by_hamming(structs, threshold)
 

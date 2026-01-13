@@ -1,0 +1,51 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\title{FR3D/BGSU under400: RNAnneal-ss + LinearFold-V + EternaFold Ensemble}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Scope}
+This report evaluates an \textbf{ensemble} that injects \textbf{LinearFold-V} and \textbf{EternaFold} \textbf{suboptimal} structures into the RNAnneal-ss candidate set, targeting improved \textbf{F1@100} and reduced \textbf{Fail@100}.
+
+\section*{Methods (high level)}
+\begin{itemize}
+  \item \textbf{RNAnneal-ss (pipeline)}: existing CaCoFold + refinement + MCMC pipeline outputting 100 candidates.
+  \item \textbf{Ensemble (RNAnneal-ss + LF + EF)}: merges per-target candidates from RNAnneal-ss, LinearFold-V, and EternaFold, then selects 100 structures with \textbf{length-adaptive per-source quotas} and \textbf{diversity (Jaccard)}.
+  \item \textbf{RNAstructure}: \texttt{Fold} MFE structure (padded to 100 for consistent @100 evaluation).
+  \item \textbf{LinearFold-V}: \texttt{--zuker} suboptimal enumeration (first 100 used).
+  \item \textbf{EternaFold}: MEA prediction plus additional structures from \texttt{contrafold sample} to reach 100 total candidates.
+\end{itemize}
+
+\section*{Results}
+\input{generated/overall_table.tex}
+\input{generated/length_table.tex}
+
+\clearpage
+\section*{Empirical CDFs}
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{generated/cdf_top1.pdf}
+  \vspace{-0.5em}
+  \caption*{\small Top-1 (F1@1)}
+\end{minipage}
+\hfill
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{generated/cdf_best100.pdf}
+  \vspace{-0.5em}
+  \caption*{\small Best-of-100 (F1@100)}
+\end{minipage}
+\caption{Empirical CDFs of per-target F1 (lines only; no markers). For F1@100, methods without a real top-100 search (e.g., MFE padded to 100) are omitted.}
+\end{figure}
+
+\end{document}

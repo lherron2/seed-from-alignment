@@ -1,0 +1,7 @@
+# STOCKHOLM 1.0
+#=GF ID tiny_test
+
+test_seq1   GGCCAAUUGGCC
+test_seq2   GGCCAAUUGGCC
+#=GC SS_cons ((((....))))
+//

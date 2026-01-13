@@ -1,0 +1,17 @@
+\begin{table}[ht]
+\centering
+\caption{Overall performance on FR3D/BGSU under400 non-rRNA benchmark (N=804; metrics @1 and best-of-100).}
+\label{tab:overall}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & Mean F1@1 & Med F1@1 & Mean F1@100 & Med F1@100 & $\Delta$F1 & Fail@100 \\
+\midrule
+RNAnneal-ss (pipeline) & 0.636 & 0.701 & 0.784 & 0.872 & 0.148 & 1.2\% \\
+RNAstructure (Fold MFE) & 0.627 & 0.688 & 0.627 & 0.688 & 0.000 & 5.7\% \\
+LinearFold-V (Zuker) & 0.622 & 0.682 & 0.794 & 0.846 & 0.172 & 0.6\% \\
+EternaFold (MEA + samples) & 0.656 & 0.733 & 0.820 & 0.872 & 0.163 & 0.1\% \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

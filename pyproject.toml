@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rnanneal"
+version = "0.1.0"
+description = "RNA secondary structure ensemble sampler with pseudoknot support"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "hypothesis",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+sample-structures = "src.lib.sample_cacofold_structures:main"
+filter-db = "src.lib.filter_db_for_rosetta:main"
+refine-unpaired = "src.lib.refine_unpaired_regions:main"
+run-pipeline = "src.lib.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = [
+    "E501",  # Line length handled separately
+    "E741",  # Ambiguous variable name (existing code uses 'l' for pair coordinates)
+    "B007",  # Loop control variable not used (common pattern in existing code)
+    "B905",  # zip() without strict= (existing code)
+    "B904",  # raise without from (existing code)
+    "B023",  # Function definition does not bind loop variable (existing code)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Existing code has naming convention issues that would be too disruptive to fix
+"src/lib/*.py" = ["N803", "N806", "N815"]
+"tests/*.py" = ["N803", "N806"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+# Relax some checks for existing code - new modules should be stricter
+implicit_optional = true
+disable_error_code = ["var-annotated", "arg-type"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-q"
