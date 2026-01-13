@@ -26,6 +26,7 @@ sample-structures = "src.lib.sample_cacofold_structures:main"
 filter-db = "src.lib.filter_db_for_rosetta:main"
 refine-unpaired = "src.lib.refine_unpaired_regions:main"
 run-pipeline = "src.lib.pipeline:main"
+rnanneal-ss = "src.lib.rnanneal_ss_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1154,7 +1154,12 @@ def run_pipeline(cfg: PipelineConfig, mode: str = "refine_first") -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="CaCoFold pipeline wrapper.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Legacy config-driven CaCoFold pipeline wrapper. "
+            "For the recommended top-K predictor entrypoint, use `rnanneal-ss`."
+        )
+    )
     parser.add_argument("-c", "--config", required=True, help="Path to config file.")
     parser.add_argument("--mode", default="refine_first")
     args = parser.parse_args(argv)

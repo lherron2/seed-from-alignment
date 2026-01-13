@@ -4,6 +4,21 @@ Reproducible benchmark runner for RNA secondary structure prediction using 3D-de
 
 See `benchmark_runner/USAGE.md` for a practical end-to-end guide (single-sequence prediction vs multi-target benchmarking, config editing, and provided runner scripts).
 
+## Recommended predictor (RNAnneal-ss)
+
+From a fresh repo clone, the recommended way to generate a **ranked top-K list** (so you can evaluate oracle best-of-K by truncating prefixes) is:
+
+```bash
+# From repo root
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -e .
+
+rnanneal-ss path/to/input.fa out/my_target --top-k 500
+```
+
+This wraps `ssbench.predict.cacofold_mcmc_pipeline` with the experiment defaults (“v3-high”) and uses the
+ensemble scaffold backends in `benchmark_runner/tools/scaffold_backends/ensemble3/` (RNAstructure + LinearFold + EternaFold).
+
 ## Quickstart
 
 This example downloads a small representative set, fetches PDBs, builds Barnaba truth, runs a dummy predictor, and scores results.
