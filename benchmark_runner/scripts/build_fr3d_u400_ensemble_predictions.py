@@ -91,6 +91,11 @@ def select_diverse(
     selected: list[StructItem] = [items[0]]
     selected_structs: set[str] = {items[0].struct}
     selected_pairs = [items[0].pairs]
+    # Maintain each candidate's current min-distance to the selected set.
+    # This makes selection O(k*n) jaccard computations instead of O(k*n*|selected|).
+    min_dist = [1.0] * n
+    for i in range(1, n):
+        min_dist[i] = jaccard_distance(items[i].pairs, items[0].pairs)
 
     def base_score(order: int) -> float:
         if not prefer_early:
@@ -100,27 +105,33 @@ def select_diverse(
         return 1.0 - (order / (n - 1))
 
     while len(selected) < k:
-        best: StructItem | None = None
+        best_idx: int | None = None
         best_u: float | None = None
         best_tie: tuple[int, str] | None = None
-
-        for it in items:
+        for idx, it in enumerate(items):
             if it.struct in selected_structs:
                 continue
             base = base_score(it.order)
-            min_dist = min(jaccard_distance(it.pairs, sp) for sp in selected_pairs) if selected_pairs else 1.0
-            u = base + diversity_weight * min_dist
+            u = base + diversity_weight * float(min_dist[idx])
             tie = (it.order, it.struct)
             if best_u is None or u > best_u or (u == best_u and (best_tie is None or tie < best_tie)):
-                best = it
+                best_idx = idx
                 best_u = u
                 best_tie = tie
 
-        if best is None:
+        if best_idx is None:
             break
+        best = items[best_idx]
         selected.append(best)
         selected_structs.add(best.struct)
         selected_pairs.append(best.pairs)
+        # Update min-distance cache after adding the new structure.
+        for i, it in enumerate(items):
+            if it.struct in selected_structs:
+                continue
+            d = jaccard_distance(it.pairs, best.pairs)
+            if d < min_dist[i]:
+                min_dist[i] = d
 
     return [it.struct for it in selected]
 
@@ -160,6 +171,41 @@ def quotas_for_length(length: int, k: int) -> tuple[int, int, int]:
     return q_pipe, q_lf, q_ef
 
 
+def quotas_for_length_with_rnastructure(length: int, k: int) -> tuple[int, int, int, int]:
+    """Return (q_pipeline, q_linearfold, q_eternafold, q_rnastructure) summing to k.
+
+    Rationale: keep a small but consistent RNAstructure share for diversity/energy-model variety,
+    while upweighting LF/EF for longer targets (they typically scale better at best-of-K).
+    """
+    s = clamp01((float(length) - 150.0) / 150.0)
+    q_rs = int(round(float(k) * 0.15))  # constant 15% share
+    q_lf = int(round(float(k) * (0.20 + 0.20 * s)))  # 20 -> 40
+    q_ef = int(round(float(k) * (0.25 + 0.20 * s)))  # 25 -> 45
+    q_pipe = int(k) - q_rs - q_lf - q_ef
+    if q_pipe < 1:
+        deficit = 1 - q_pipe
+        q_pipe = 1
+        # Reduce EF first, then LF, then RNAstructure.
+        take = min(deficit, q_ef)
+        q_ef -= take
+        deficit -= take
+        take = min(deficit, q_lf)
+        q_lf -= take
+        deficit -= take
+        take = min(deficit, q_rs)
+        q_rs -= take
+        deficit -= take
+
+    q_pipe = max(0, q_pipe)
+    q_lf = max(0, q_lf)
+    q_ef = max(0, q_ef)
+    q_rs = max(0, q_rs)
+    total = q_pipe + q_lf + q_ef + q_rs
+    if total != int(k):
+        q_pipe += int(k) - total
+    return q_pipe, q_lf, q_ef, q_rs
+
+
 def load_manifest_target_ids(path: Path) -> list[str]:
     with path.open(newline="") as f:
         r = csv.DictReader(f)
@@ -190,6 +236,11 @@ def main() -> None:
     parser.add_argument("--pipeline-preds", required=True, help="RNAnneal-ss predictions directory")
     parser.add_argument("--linearfold-preds", required=True, help="LinearFold-V predictions directory")
     parser.add_argument("--eternafold-preds", required=True, help="EternaFold predictions directory")
+    parser.add_argument(
+        "--rnastructure-preds",
+        default=None,
+        help="Optional RNAstructure AllSub predictions directory (if provided, included in the ensemble).",
+    )
     parser.add_argument("--k", type=int, default=100, help="Number of structures per target (default: 100)")
     args = parser.parse_args()
 
@@ -198,6 +249,7 @@ def main() -> None:
     pipe_root = Path(args.pipeline_preds)
     lf_root = Path(args.linearfold_preds)
     ef_root = Path(args.eternafold_preds)
+    rs_root = Path(args.rnastructure_preds) if args.rnastructure_preds else None
     k = int(args.k)
     if k <= 0:
         raise SystemExit("--k must be > 0")
@@ -213,13 +265,20 @@ def main() -> None:
         pipe_db = pipe_root / safe_id / "predictions.db"
         lf_db = lf_root / safe_id / "predictions.db"
         ef_db = ef_root / safe_id / "predictions.db"
+        rs_db = rs_root / safe_id / "predictions.db" if rs_root else None
         if not (pipe_db.exists() and lf_db.exists() and ef_db.exists()):
+            missing += 1
+            continue
+        if rs_db is not None and not rs_db.exists():
             missing += 1
             continue
 
         seq_p, pipe_structs = read_predictions_db(pipe_db)
         seq_l, lf_structs = read_predictions_db(lf_db)
         seq_e, ef_structs = read_predictions_db(ef_db)
+        seq_r, rs_structs = ("", [])
+        if rs_db is not None:
+            seq_r, rs_structs = read_predictions_db(rs_db)
         seq = seq_p or seq_l or seq_e
         if not seq:
             missing += 1
@@ -229,19 +288,27 @@ def main() -> None:
             pass
         if seq_e and seq_e != seq:
             pass
+        if seq_r and seq_r != seq:
+            pass
 
         L = len(seq)
         pipe_structs = unique_structs(pipe_structs, L)
         lf_structs = unique_structs(lf_structs, L)
         ef_structs = unique_structs(ef_structs, L)
+        rs_structs = unique_structs(rs_structs, L) if rs_db is not None else []
 
-        q_pipe, q_lf, q_ef = quotas_for_length(L, k)
+        if rs_db is None:
+            q_pipe, q_lf, q_ef = quotas_for_length(L, k)
+            q_rs = 0
+        else:
+            q_pipe, q_lf, q_ef, q_rs = quotas_for_length_with_rnastructure(L, k)
 
         # Within-source selection: keep quality by preferring early items for RNAnneal-ss and LF,
         # but strongly prioritize diversity for EternaFold samples (best-of-100 is often late).
         pipe_sel = select_diverse(pipe_structs, q_pipe, prefer_early=True, diversity_weight=0.6)
         lf_sel = select_diverse(lf_structs, q_lf, prefer_early=True, diversity_weight=0.6)
         ef_sel = select_diverse(ef_structs, q_ef, prefer_early=False, diversity_weight=1.0)
+        rs_sel = select_diverse(rs_structs, q_rs, prefer_early=True, diversity_weight=0.8) if q_rs else []
 
         selected: list[str] = []
         seen: set[str] = set()
@@ -259,6 +326,7 @@ def main() -> None:
         add_many(pipe_sel)
         add_many(lf_sel)
         add_many(ef_sel)
+        add_many(rs_sel)
 
         # Fill remaining slots (e.g. after cross-source dedup) by global diversity.
         if len(selected) < k:
@@ -266,35 +334,55 @@ def main() -> None:
             pool.extend(pipe_structs)
             pool.extend(lf_structs)
             pool.extend(ef_structs)
+            pool.extend(rs_structs)
             pool = unique_structs(pool, L)
 
             pool_items = [StructItem(s, pairs_from_dotbracket(s), i) for i, s in enumerate(pool)]
             selected_pairs = [pairs_from_dotbracket(s) for s in selected]
+            selected_structs_set = set(selected)
+            # Cache each pool candidate's min-distance to the current selected set.
+            pool_min_dist = [1.0] * len(pool_items)
+            if selected_pairs:
+                for i, it in enumerate(pool_items):
+                    if it.struct in selected_structs_set:
+                        pool_min_dist[i] = 0.0
+                        continue
+                    md = 1.0
+                    for sp in selected_pairs:
+                        d = jaccard_distance(it.pairs, sp)
+                        if d < md:
+                            md = d
+                            if md <= 0.0:
+                                break
+                    pool_min_dist[i] = md
 
             while len(selected) < k and len(seen) < len(pool_items):
-                best: StructItem | None = None
+                best_idx: int | None = None
                 best_u: float | None = None
                 best_tie: tuple[int, str] | None = None
-                for it in pool_items:
+                for idx, it in enumerate(pool_items):
                     if it.struct in seen:
                         continue
                     base = 1.0 if len(pool_items) <= 1 else 1.0 - (it.order / (len(pool_items) - 1))
-                    min_dist = (
-                        min(jaccard_distance(it.pairs, sp) for sp in selected_pairs)
-                        if selected_pairs
-                        else 1.0
-                    )
-                    u = base + 0.8 * min_dist
+                    u = base + 0.8 * float(pool_min_dist[idx])
                     tie = (it.order, it.struct)
                     if best_u is None or u > best_u or (u == best_u and (best_tie is None or tie < best_tie)):
-                        best = it
+                        best_idx = idx
                         best_u = u
                         best_tie = tie
-                if best is None:
+                if best_idx is None:
                     break
+                best = pool_items[best_idx]
                 seen.add(best.struct)
                 selected.append(best.struct)
                 selected_pairs.append(best.pairs)
+                # Update min-distance cache after adding the new structure.
+                for i, it in enumerate(pool_items):
+                    if it.struct in seen:
+                        continue
+                    d = jaccard_distance(it.pairs, best.pairs)
+                    if d < pool_min_dist[i]:
+                        pool_min_dist[i] = d
 
         if not selected:
             selected = ["." * L]
@@ -319,4 +407,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

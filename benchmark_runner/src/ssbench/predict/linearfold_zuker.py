@@ -26,6 +26,7 @@ def _is_dotbracket(token: str, length: int) -> bool:
 def _run_linearfold_stream(
     *,
     linearfold: Path,
+    docker_image: str | None,
     seq_id: str,
     seq: str,
     k: int,
@@ -33,16 +34,36 @@ def _run_linearfold_stream(
     delta: float,
     max_seconds: float | None,
 ) -> tuple[list[str], str]:
-    cmd = [
-        str(linearfold),
-        "--fasta",
-        "-V",
-        "-b",
-        str(beamsize),
-        "--zuker",
-        "--delta",
-        str(delta),
-    ]
+    if docker_image:
+        uid = os.getuid()
+        gid = os.getgid()
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-i",
+            "--user",
+            f"{uid}:{gid}",
+            docker_image,
+            "--fasta",
+            "-V",
+            "-b",
+            str(beamsize),
+            "--zuker",
+            "--delta",
+            str(delta),
+        ]
+    else:
+        cmd = [
+            str(linearfold),
+            "--fasta",
+            "-V",
+            "-b",
+            str(beamsize),
+            "--zuker",
+            "--delta",
+            str(delta),
+        ]
     fasta_text = f">{seq_id}\n{seq}\n"
 
     start = time.time()
@@ -117,6 +138,11 @@ def main() -> None:
         help="Path to LinearFold wrapper script (default: repo external/LinearFold/linearfold)",
     )
     parser.add_argument(
+        "--docker-image",
+        default=None,
+        help="Run LinearFold via Docker (image name/tag). If set, --linearfold is ignored.",
+    )
+    parser.add_argument(
         "--max-seconds",
         type=float,
         default=30.0,
@@ -130,6 +156,7 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[4]
     linearfold = args.linearfold or (repo_root / "external" / "LinearFold" / "linearfold")
+    docker_image = str(args.docker_image) if args.docker_image else os.environ.get("LINEARFOLD_DOCKER_IMAGE")
 
     rec = read_single_fasta(fasta_path.read_text())
     seq = sanitize_rna_sequence_preserve_length(rec.sequence)
@@ -137,6 +164,7 @@ def main() -> None:
     t0 = time.time()
     structs, raw_out = _run_linearfold_stream(
         linearfold=linearfold,
+        docker_image=docker_image,
         seq_id=rec.seq_id,
         seq=seq,
         k=int(args.k),
@@ -158,6 +186,7 @@ def main() -> None:
             {
                 "method": "LinearFold-V (Zuker suboptimals)",
                 "linearfold": str(linearfold),
+                "docker_image": docker_image or "",
                 "beamsize": int(args.beamsize),
                 "delta": float(args.delta),
                 "k": int(args.k),

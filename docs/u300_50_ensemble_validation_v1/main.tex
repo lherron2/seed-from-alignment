@@ -1,0 +1,86 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots,statistics}
+\pgfplotsset{compat=1.18}
+
+\title{RNAnneal-ss Ensembles on representative50 (under300) --- v1}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Objective}
+Improve \textbf{F1@100} on the 50-target representative50 subset (truth length $\le 300$) by leveraging the empirical observation from \texttt{docs/u300\_50\_scaffold\_validation\_v3} that \textbf{RNss(X)} typically improves the corresponding baseline \textbf{X}, especially at @100.
+
+\section*{Methods}
+\begin{itemize}
+  \item \textbf{RNss(EF/LF/RS):} the three scaffold-seeded RNAnneal-ss variants from \texttt{u300\_50\_scaffold\_validation\_v3}.
+  \item \textbf{Ens(RNss):} a post-hoc ensemble that pools the \emph{top-100 candidate sets} from RNss(EF), RNss(LF), and RNss(RS), then selects 100 structures using:
+    \begin{itemize}
+      \item length-adaptive per-source quotas that preserve most RNss(EF) candidates (70--90 of 100, increasing with length),
+      \item within-source diversity (Jaccard) to keep suboptimal coverage,
+      \item a global diversity fill step to resolve cross-source deduplication.
+    \end{itemize}
+  \item \textbf{RNss(Ens3):} a single RNAnneal-ss run that replaces single-strand \texttt{Fold}/\texttt{AllSub} with an \emph{aggregated} backend (RNAstructure + LinearFold-V + EternaFold). Included as an ablation (it did not outperform Ens(RNss) at @100).
+  \item \textbf{Baselines:} RNAstructure, LinearFold-V, and EternaFold from \texttt{u300\_50\_scaffold\_validation\_v3}.
+\end{itemize}
+
+\section*{Results (@1 and @100)}
+\input{generated/overall_table.tex}
+\input{generated/bucket_table.tex}
+
+\clearpage
+\section*{1 - CDFs}
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \input{generated/survival_top1.tex}
+  \caption*{\small F1@1}
+\end{minipage}
+\hfill
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \input{generated/survival_best100.tex}
+  \caption*{\small F1@100}
+\end{minipage}
+\caption{Empirical survival curves (1 - CDF). Legend includes the median (p50) F1.}
+\end{figure}
+
+\section*{Precision/Recall Curves}
+\begin{figure}[H]
+\centering
+\input{generated/pr_overall.tex}
+\caption{Pair-level PR curves computed by thresholding pair probabilities estimated as \emph{frequency across the top-100 predicted structures}.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\input{generated/pr_by_bucket.tex}
+\caption{PR curves by 50-nt length bucket.}
+\end{figure}
+
+\clearpage
+\section*{Score Distributions}
+\begin{figure}[H]
+\centering
+\input{generated/dist_f1_top1_by_bucket.tex}
+\caption{F1@1 distributions by length bucket (boxplots; outliers hidden).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\input{generated/dist_f1_best100_by_bucket.tex}
+\caption{F1@100 distributions by length bucket (boxplots; outliers hidden).}
+\end{figure}
+
+\section*{Takeaways}
+On this subset, \textbf{Ens(RNss)} achieves the best mean F1@100 while preserving \textbf{Fail@100 = 0\%}. The improvement over RNss(EF) is small but consistent with the premise that a small amount of additional diversity from other \textbf{RNss(X)} variants can recover complementary wins without sacrificing the high-yield EF candidate set.
+
+\end{document}
+

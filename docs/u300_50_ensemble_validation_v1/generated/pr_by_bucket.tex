@@ -1,0 +1,72 @@
+\begin{tikzpicture}
+\definecolor{c_ens_tuned}{HTML}{000000}
+\definecolor{c_rn_ef}{HTML}{D62728}
+\definecolor{c_rn_lf}{HTML}{9467BD}
+\definecolor{c_rn_rs}{HTML}{1F77B4}
+\definecolor{c_ens3_scaff}{HTML}{7F7F7F}
+\definecolor{c_lf}{HTML}{FF7F0E}
+\definecolor{c_ef}{HTML}{2CA02C}
+\definecolor{c_rs}{HTML}{BCBD22}
+\begin{groupplot}[
+  group style={group size=3 by 2, horizontal sep=1.2em, vertical sep=1.2em},
+  width=0.33\linewidth, height=0.33\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={Recall}, ylabel={Precision},
+  grid=both, grid style={black!10},
+]
+\nextgroupplot[title={130-179}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_130_179_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_130_179_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_130_179_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_130_179_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_130_179_rs.dat};
+\nextgroupplot[title={180-229}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_180_229_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_180_229_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_180_229_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_180_229_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_180_229_rs.dat};
+\nextgroupplot[title={230-279}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_230_279_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_230_279_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_230_279_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_230_279_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_230_279_rs.dat};
+\nextgroupplot[title={280-300}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_280_300_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_280_300_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_280_300_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_280_300_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_280_300_rs.dat};
+\nextgroupplot[title={30-79}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_30_79_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_30_79_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_30_79_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_30_79_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_30_79_rs.dat};
+\nextgroupplot[title={80-129}]
+\addplot+[very thick, draw=c_ens_tuned] table[x=recall,y=precision] {generated/pr_bucket_80_129_ens_tuned.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_ef.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_rs.dat};
+\addplot+[very thick, draw=c_ens3_scaff] table[x=recall,y=precision] {generated/pr_bucket_80_129_ens3_scaff.dat};
+\addplot+[very thick, draw=c_lf] table[x=recall,y=precision] {generated/pr_bucket_80_129_lf.dat};
+\addplot+[very thick, draw=c_ef] table[x=recall,y=precision] {generated/pr_bucket_80_129_ef.dat};
+\addplot+[very thick, draw=c_rs] table[x=recall,y=precision] {generated/pr_bucket_80_129_rs.dat};
+\end{groupplot}
+\end{tikzpicture}

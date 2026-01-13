@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _ct import CtStruct, write_ct  # noqa: E402
+from _docker import docker_run_in_dir  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _util import extract_db_lines, score_with_efn2  # noqa: E402
+
+
+def read_single_fasta(path: Path) -> tuple[str, str]:
+    seq_id = "seq"
+    seq_parts: list[str] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith(">"):
+            seq_id = ln[1:].strip() or seq_id
+            continue
+        seq_parts.append(ln)
+    return seq_id, "".join(seq_parts).upper().replace("T", "U")
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        sys.stderr.write("USAGE: Fold <fasta> <out.ct> [options]\n")
+        return 2
+    fasta = Path(argv[1])
+    out_ct = Path(argv[2])
+
+    eternafold_image = (os.environ.get("ETERNAFOLD_DOCKER_IMAGE") or "").strip()
+    rnastructure_image = (os.environ.get("RNASTRUCTURE_DOCKER_IMAGE") or "").strip() or None
+
+    repo_root = Path(__file__).resolve().parents[4]
+    contrafold = Path(
+        os.environ.get("ETERNAFOLD_CONTRAFOLD_BIN")
+        or (repo_root / "external" / "EternaFold" / "src" / "contrafold")
+    )
+    params = Path(
+        os.environ.get("ETERNAFOLD_PARAMS")
+        or (repo_root / "external" / "EternaFold" / "parameters" / "EternaFoldParams.v1")
+    )
+
+    seq_id, seq = read_single_fasta(fasta)
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        td_path.joinpath("input.fa").write_text(f">{seq_id}\n{seq}\n")
+        if eternafold_image:
+            rc, pred_out = docker_run_in_dir(
+                image=eternafold_image,
+                work_dir=td_path,
+                args=["predict", "input.fa", "--params", "/opt/eternafold/parameters/EternaFoldParams.v1"],
+            )
+        else:
+            proc = subprocess.run(
+                [str(contrafold), "predict", "input.fa", "--params", str(params)],
+                cwd=str(td_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            rc, pred_out = int(proc.returncode), proc.stdout
+        if rc != 0:
+            sys.stderr.write(pred_out)
+            struct = "." * len(seq)
+        else:
+            lines = extract_db_lines(pred_out, len(seq))
+            struct = lines[0] if lines else "." * len(seq)
+
+        tmp_ct = td_path / "out.ct"
+        write_ct(seq=seq, structs=[CtStruct(struct, 0.0, seq_id)], out_path=tmp_ct)
+        energies = score_with_efn2(rnastructure_image=rnastructure_image, work_dir=td_path, ct_name="out.ct")
+        if len(energies) == 1:
+            write_ct(seq=seq, structs=[CtStruct(struct, energies[0], seq_id)], out_path=tmp_ct)
+
+        out_ct.parent.mkdir(parents=True, exist_ok=True)
+        out_ct.write_text(tmp_ct.read_text())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -1,0 +1,27 @@
+\begin{tikzpicture}
+\definecolor{c_k1}{HTML}{1F77B4}
+\definecolor{c_k50}{HTML}{FF7F0E}
+\definecolor{c_k100}{HTML}{2CA02C}
+\definecolor{c_k200}{HTML}{D62728}
+\definecolor{c_k500}{HTML}{9467BD}
+\begin{axis}[
+  width=\linewidth, height=0.62\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={F1}, ylabel={1 - CDF},
+  title={1 - CDF of best-of-K F1},
+  grid=both, grid style={black!10},
+  legend pos=north east, legend cell align=left,
+  legend style={font=\scriptsize},
+]
+\addplot+[const plot, very thick, draw=c_k1] table[x=f1,y=survival] {generated/survival_1.dat};
+\addlegendentry{@1 (p50=0.529)}
+\addplot+[const plot, very thick, draw=c_k50] table[x=f1,y=survival] {generated/survival_50.dat};
+\addlegendentry{@50 (p50=0.615)}
+\addplot+[const plot, very thick, draw=c_k100] table[x=f1,y=survival] {generated/survival_100.dat};
+\addlegendentry{@100 (p50=0.686)}
+\addplot+[const plot, very thick, draw=c_k200] table[x=f1,y=survival] {generated/survival_200.dat};
+\addlegendentry{@200 (p50=0.697)}
+\addplot+[const plot, very thick, draw=c_k500] table[x=f1,y=survival] {generated/survival_500.dat};
+\addlegendentry{@500 (p50=0.743)}
+\end{axis}
+\end{tikzpicture}

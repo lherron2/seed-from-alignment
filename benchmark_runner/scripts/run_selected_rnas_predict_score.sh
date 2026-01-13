@@ -49,6 +49,7 @@ emit("FOLD_EXE", rnastructure.get("fold"))
 emit("PARTITION_EXE", rnastructure.get("partition"))
 emit("PROBPLOT_EXE", rnastructure.get("probplot"))
 emit("DATAPATH", rnastructure.get("datapath"))
+emit("RNASTRUCTURE_DOCKER_IMAGE", rnastructure.get("docker_image"))
 
 emit("TOP_K", predict.get("top_k"))
 emit("MIN_LOOP_SEP", predict.get("min_loop_sep"))
@@ -85,6 +86,7 @@ PY
 eval "$CFG_VARS"
 
 : "${DATAPATH:=}"
+: "${RNASTRUCTURE_DOCKER_IMAGE:=}"
 : "${TOP_K:=100}"
 : "${MIN_LOOP_SEP:=0}"
 : "${PK_ALPHA:=0.5}"
@@ -114,6 +116,23 @@ eval "$CFG_VARS"
 : "${PAIR_PENALTY:=}"
 : "${PAIR_PENALTY_SCALE:=0.25}"
 
+resolve_from_root() {
+  local p="${1:-}"
+  if [[ -z "$p" ]]; then
+    echo ""
+  elif [[ "$p" = /* ]]; then
+    echo "$p"
+  else
+    echo "$ROOT_DIR/$p"
+  fi
+}
+
+ALLSUB_EXE="$(resolve_from_root "$ALLSUB_EXE")"
+DUPLEX_EXE="$(resolve_from_root "$DUPLEX_EXE")"
+FOLD_EXE="$(resolve_from_root "$FOLD_EXE")"
+PARTITION_EXE="$(resolve_from_root "$PARTITION_EXE")"
+PROBPLOT_EXE="$(resolve_from_root "$PROBPLOT_EXE")"
+
 # Defaults tuned to keep wall time low; override via env vars as needed.
 : "${N_SAMPLES:=50}"
 : "${BURN_IN:=100}"
@@ -133,6 +152,7 @@ eval "$CFG_VARS"
 
 PRED_ARGS=(
   "DATAPATH=${DATAPATH}"
+  "RNASTRUCTURE_DOCKER_IMAGE=${RNASTRUCTURE_DOCKER_IMAGE}"
   "PYTHONPATH=$ROOT_DIR/src"
   "$PYTHON_BIN"
   "-m"

@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _ct import CtStruct, write_ct  # noqa: E402
+
+
+def read_single_fasta(path: Path) -> tuple[str, str]:
+    seq_id = "seq"
+    seq_parts: list[str] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith(">"):
+            seq_id = ln[1:].strip() or seq_id
+            continue
+        seq_parts.append(ln)
+    return seq_id, "".join(seq_parts).upper().replace("T", "U")
+
+
+def _resolve_default(rel: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[4]
+    return (repo_root / rel).resolve()
+
+
+def _env_path(name: str) -> Path | None:
+    val = (os.environ.get(name) or "").strip()
+    if not val:
+        return None
+    return Path(val)
+
+
+def _run_fold(exe: Path, fasta: Path, out_ct: Path, extra: list[str]) -> bool:
+    try:
+        proc = subprocess.run([str(exe), str(fasta), str(out_ct), *extra], check=False)
+        return proc.returncode == 0 and out_ct.exists() and out_ct.stat().st_size > 0
+    except FileNotFoundError:
+        return False
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        sys.stderr.write("USAGE: Fold <fasta> <out.ct> [options]\n")
+        return 2
+
+    fasta = Path(argv[1])
+    out_ct = Path(argv[2])
+    extra = list(argv[3:])
+
+    seq_id, seq = read_single_fasta(fasta)
+    out_ct.parent.mkdir(parents=True, exist_ok=True)
+
+    rs_fold = _env_path("ENSEMBLE3_RS_FOLD") or _resolve_default("RNAstructure/exe/Fold")
+    lf_fold = _env_path("ENSEMBLE3_LF_FOLD") or _resolve_default(
+        "benchmark_runner/tools/scaffold_backends/linearfold_v/Fold"
+    )
+    ef_fold = _env_path("ENSEMBLE3_EF_FOLD") or _resolve_default(
+        "benchmark_runner/tools/scaffold_backends/eternafold/Fold"
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        tmp_ct = td_path / "out.ct"
+        for exe in (rs_fold, lf_fold, ef_fold):
+            tmp_ct.unlink(missing_ok=True)
+            if _run_fold(exe, fasta, tmp_ct, extra):
+                shutil.copyfile(tmp_ct, out_ct)
+                return 0
+
+    # Total fallback: always emit a valid CT.
+    write_ct(seq=seq, structs=[CtStruct("." * len(seq), 0.0, seq_id)], out_path=out_ct)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

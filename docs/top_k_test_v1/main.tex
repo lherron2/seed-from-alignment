@@ -1,0 +1,55 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\title{RNAnneal-ss top-K output size test (under300 representative50) --- v1}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Goal}
+Measure whether emitting more structures improves oracle best-of-$K$ accuracy, and where diminishing returns start, by evaluating prefixes of a single ranked output list.
+
+\section*{Setup}
+\begin{itemize}
+  \item \textbf{Targets:} representative50 subset (truth length $\le 300$) from FR3D/BGSU under400.
+  \item \textbf{Predictor:} RNAnneal-ss (v3-high settings), run once with \texttt{--top-k 500}.
+  \item \textbf{Scaffolds:} EternaFold (Fold + AllSub-like). Duplex sampling uses RNAstructure \texttt{DuplexFold}.
+  \item \textbf{Metric:} for each $K \in \{1,50,100,200,500\}$ compute the \emph{oracle} best F1 among the first $K$ outputs.
+\end{itemize}
+
+\section*{Summary}
+\input{generated/overall_table.tex}
+
+\section*{Do longer RNAs benefit more?}
+\input{generated/delta_by_len_table.tex}
+\input{generated/len_findings.tex}
+\begin{figure}[H]
+  \centering
+  \input{generated/delta_vs_k_by_len.tex}
+  \caption{Mean improvement (best-of-$K$ minus best-of-1) for short vs long targets.}
+\end{figure}
+
+\clearpage
+\section*{Diminishing returns}
+\begin{figure}[H]
+  \centering
+  \input{generated/mean_f1_vs_k.tex}
+  \vspace{0.5em}
+  \input{generated/fail_vs_k.tex}
+  \caption{Mean best-of-$K$ F1 and fail rate as a function of output size.}
+\end{figure}
+
+\section*{CDF}
+\begin{figure}[H]
+  \centering
+  \input{generated/cdf.tex}
+  \caption{Empirical CDF for best-of-$K$ F1. Legend includes the median (p50) F1.}
+\end{figure}
+
+\end{document}

@@ -13,7 +13,14 @@ from .fasta_utils import read_single_fasta, sanitize_rna_sequence_preserve_lengt
 
 
 def ensure_datapath(*, exe_hint: Path | None = None) -> None:
-    if os.environ.get("DATAPATH"):
+    # Treat an explicitly exported (possibly empty) DATAPATH as "set".
+    # This supports docker-wrapped RNAstructure executables, which provide their own in-container DATAPATH.
+    if "DATAPATH" in os.environ:
+        return
+    # If we're using the docker-wrapped executables, do not auto-point DATAPATH to a host directory.
+    # The wrapper will inject a valid in-container default when DATAPATH is empty/unset.
+    if exe_hint is not None and "rnastructure_docker" in exe_hint.parts:
+        os.environ["DATAPATH"] = ""
         return
     candidates: list[Path] = []
     if exe_hint is not None:
@@ -93,6 +100,15 @@ def main() -> None:
         help="Absolute energy window for AllSub (-a, kcal/mol).",
     )
     parser.add_argument(
+        "--max-allsub-len",
+        type=int,
+        default=None,
+        help=(
+            "If set, skip AllSub for sequences longer than this length and emit Fold(MFE) only. "
+            "Useful for keeping runtime bounded on large benchmarks."
+        ),
+    )
+    parser.add_argument(
         "--keep-ct",
         action="store_true",
         help="Keep the (potentially large) AllSub CT output in the per-target directory.",
@@ -121,23 +137,28 @@ def main() -> None:
     ensure_datapath(exe_hint=allsub)
 
     ct_path = out_dir / "allsub.ct"
-    t0 = time.time()
-    cmd = [str(allsub), str(sanitized_fasta), str(ct_path), "-a", str(float(args.abs))]
-    try:
-        out = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-            timeout=float(args.max_seconds) if args.max_seconds is not None else None,
-        ).stdout
-    except subprocess.TimeoutExpired:
-        out = f"[TIMEOUT] AllSub exceeded {args.max_seconds} seconds\n"
-    elapsed = time.time() - t0
+    skipped_allsub = bool(args.max_allsub_len is not None and len(seq) > int(args.max_allsub_len))
+    if skipped_allsub:
+        out = "[SKIP] AllSub skipped due to --max-allsub-len\n"
+        elapsed = 0.0
+    else:
+        t0 = time.time()
+        cmd = [str(allsub), str(sanitized_fasta), str(ct_path), "-a", str(float(args.abs))]
+        try:
+            out = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=float(args.max_seconds) if args.max_seconds is not None else None,
+            ).stdout
+        except subprocess.TimeoutExpired:
+            out = f"[TIMEOUT] AllSub exceeded {args.max_seconds} seconds\n"
+        elapsed = time.time() - t0
 
     structs: list[str] = []
-    if ct_path.exists():
+    if (not skipped_allsub) and ct_path.exists():
         try:
             structs = ct_to_dotbracket(ct_path.read_text())
         except Exception:
@@ -203,6 +224,8 @@ def main() -> None:
                 "fold_exe": str(fold_exe),
                 "abs": float(args.abs),
                 "k": int(args.k),
+                "max_allsub_len": int(args.max_allsub_len) if args.max_allsub_len is not None else None,
+                "skipped_allsub": skipped_allsub,
                 "elapsed_seconds": elapsed,
                 "n_unique_structs": int(len(set(filtered))),
                 "used_fallback_fold": used_fallback_fold,

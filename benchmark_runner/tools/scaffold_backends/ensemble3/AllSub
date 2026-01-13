@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import itertools
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from src.lib import refine_unpaired_regions as rup  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _ct import CtStruct, write_ct  # noqa: E402
+
+
+def read_single_fasta(path: Path) -> tuple[str, str]:
+    seq_id = "seq"
+    seq_parts: list[str] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith(">"):
+            seq_id = ln[1:].strip() or seq_id
+            continue
+        seq_parts.append(ln)
+    return seq_id, "".join(seq_parts).upper().replace("T", "U")
+
+
+def _resolve_default(rel: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[4]
+    return (repo_root / rel).resolve()
+
+
+def _env_path(name: str) -> Path | None:
+    val = (os.environ.get(name) or "").strip()
+    if not val:
+        return None
+    return Path(val)
+
+
+def _run_allsub(exe: Path, fasta: Path, out_ct: Path, extra: list[str]) -> bool:
+    try:
+        proc = subprocess.run([str(exe), str(fasta), str(out_ct), *extra], check=False)
+        return proc.returncode == 0 and out_ct.exists() and out_ct.stat().st_size > 0
+    except FileNotFoundError:
+        return False
+
+
+def _interleave_sources(
+    sources: list[list[tuple[str, float]]],
+    *,
+    max_total: int,
+    length: int,
+) -> list[tuple[str, float]]:
+    # Round-robin interleave, then fall back to concatenation order for any remaining tails.
+    seen: set[str] = set()
+    out: list[tuple[str, float]] = []
+
+    def add(db: str, e: float) -> None:
+        if len(db) != length:
+            return
+        if db in seen:
+            return
+        seen.add(db)
+        out.append((db, float(e)))
+
+    for group in itertools.zip_longest(*sources, fillvalue=None):
+        for item in group:
+            if item is None:
+                continue
+            db, e = item
+            add(db, e)
+            if len(out) >= max_total:
+                return out
+
+    # If some sources were much longer, zip_longest already emitted their tails as well; but keep
+    # a final safety pass in declared source order.
+    for src in sources:
+        for db, e in src:
+            add(db, e)
+            if len(out) >= max_total:
+                return out
+    return out
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        sys.stderr.write("USAGE: AllSub <fasta> <out.ct> [options]\n")
+        return 2
+
+    fasta = Path(argv[1])
+    out_ct = Path(argv[2])
+    extra = list(argv[3:])
+
+    max_structs = int(os.environ.get("RNANNEAL_SS_SUBOPT_MAX", "200"))
+    max_structs = max(1, max_structs)
+
+    seq_id, seq = read_single_fasta(fasta)
+    L = len(seq)
+
+    rs_allsub = _env_path("ENSEMBLE3_RS_ALLSUB") or _resolve_default("RNAstructure/exe/AllSub")
+    lf_allsub = _env_path("ENSEMBLE3_LF_ALLSUB") or _resolve_default(
+        "benchmark_runner/tools/scaffold_backends/linearfold_v/AllSub"
+    )
+    ef_allsub = _env_path("ENSEMBLE3_EF_ALLSUB") or _resolve_default(
+        "benchmark_runner/tools/scaffold_backends/eternafold/AllSub"
+    )
+
+    structs_rs: list[tuple[str, float]] = []
+    structs_lf: list[tuple[str, float]] = []
+    structs_ef: list[tuple[str, float]] = []
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        rs_ct = td_path / "rs.ct"
+        lf_ct = td_path / "lf.ct"
+        ef_ct = td_path / "ef.ct"
+
+        if _run_allsub(rs_allsub, fasta, rs_ct, extra):
+            try:
+                structs_rs = [(db, e) for db, e in rup.parse_ct_file(rs_ct) if len(db) == L]
+            except Exception:
+                structs_rs = []
+
+        if _run_allsub(lf_allsub, fasta, lf_ct, extra):
+            try:
+                structs_lf = [(db, e) for db, e in rup.parse_ct_file(lf_ct) if len(db) == L]
+            except Exception:
+                structs_lf = []
+
+        if _run_allsub(ef_allsub, fasta, ef_ct, extra):
+            try:
+                structs_ef = [(db, e) for db, e in rup.parse_ct_file(ef_ct) if len(db) == L]
+            except Exception:
+                structs_ef = []
+
+    combined = _interleave_sources([structs_rs, structs_lf, structs_ef], max_total=max_structs, length=L)
+    if not combined:
+        combined = [("." * L, 0.0)]
+
+    out_ct.parent.mkdir(parents=True, exist_ok=True)
+    write_ct(seq=seq, structs=[CtStruct(db, e, seq_id) for db, e in combined], out_path=out_ct)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

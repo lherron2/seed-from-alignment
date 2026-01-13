@@ -1,0 +1,76 @@
+\begin{tikzpicture}
+\definecolor{c_ens_tuned}{HTML}{000000}
+\definecolor{c_rn_ef}{HTML}{D62728}
+\definecolor{c_rn_lf}{HTML}{9467BD}
+\definecolor{c_rn_rs}{HTML}{1F77B4}
+\definecolor{c_ens3_scaff}{HTML}{7F7F7F}
+\definecolor{c_lf}{HTML}{FF7F0E}
+\definecolor{c_ef}{HTML}{2CA02C}
+\definecolor{c_rs}{HTML}{BCBD22}
+\begin{groupplot}[
+  group style={group size=3 by 2, horizontal sep=1.2em, vertical sep=1.2em},
+  width=0.33\linewidth, height=0.33\linewidth,
+  xmin=0.5, xmax=8.5,
+  ymin=0, ymax=1,
+  ymajorgrids=true, grid style={black!10},
+  xtick={1,2,3,4,5,6,7,8},
+  xticklabels={Ens,RNss(EF),RNss(LF),RNss(RS),RNss(Ens3),LF-V,EFold,RNAstr},
+  x tick label style={rotate=30,anchor=east,font=\scriptsize},
+  title style={font=\small},
+]
+\nextgroupplot[title={130-179}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.1096, lower quartile=0.4337, median=0.5447, upper quartile=0.6649, upper whisker=0.8776}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.1096, lower quartile=0.4337, median=0.5447, upper quartile=0.6649, upper whisker=0.8776}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.0000, lower quartile=0.2675, median=0.4098, upper quartile=0.5847, upper whisker=0.8776}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.0000, lower quartile=0.4733, median=0.5216, upper quartile=0.6265, upper whisker=0.9167}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.0000, lower quartile=0.4656, median=0.5385, upper quartile=0.6579, upper whisker=0.8511}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.0000, lower quartile=0.3017, median=0.4889, upper quartile=0.6057, upper whisker=0.8817}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.1096, lower quartile=0.4337, median=0.5447, upper quartile=0.6649, upper whisker=0.9684}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.0000, lower quartile=0.3067, median=0.4711, upper quartile=0.5893, upper whisker=0.8817}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\nextgroupplot[title={180-229}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.1231, lower quartile=0.2889, median=0.3918, upper quartile=0.5319, upper whisker=0.6261}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.1231, lower quartile=0.2889, median=0.3918, upper quartile=0.5319, upper whisker=0.6261}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.1550, lower quartile=0.2921, median=0.3333, upper quartile=0.3836, upper whisker=0.5574}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.1240, lower quartile=0.2955, median=0.3540, upper quartile=0.4058, upper whisker=0.4912}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.1231, lower quartile=0.2889, median=0.3333, upper quartile=0.3836, upper whisker=0.4957}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.1550, lower quartile=0.2921, median=0.3103, upper quartile=0.3789, upper whisker=0.4957}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.1231, lower quartile=0.2889, median=0.3918, upper quartile=0.5319, upper whisker=0.6261}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.1240, lower quartile=0.2955, median=0.3540, upper quartile=0.3830, upper whisker=0.5000}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\nextgroupplot[title={230-279}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.2062, lower quartile=0.3354, median=0.4252, upper quartile=0.6489, upper whisker=0.8451}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.2062, lower quartile=0.3354, median=0.4252, upper quartile=0.6489, upper whisker=0.8451}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.0438, lower quartile=0.1290, median=0.3743, upper quartile=0.4426, upper whisker=0.7347}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.1649, lower quartile=0.2847, median=0.3765, upper quartile=0.4583, upper whisker=0.5638}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.0964, lower quartile=0.2561, median=0.3741, upper quartile=0.4382, upper whisker=0.7347}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.0438, lower quartile=0.1587, median=0.3787, upper quartile=0.4426, upper whisker=0.7347}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.2062, lower quartile=0.3354, median=0.4576, upper quartile=0.6489, upper whisker=0.8451}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.1649, lower quartile=0.2986, median=0.3765, upper quartile=0.4759, upper whisker=0.5899}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\nextgroupplot[title={280-300}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.4881, lower quartile=0.4938, median=0.4995, upper quartile=0.5052, upper whisker=0.5109}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.4881, lower quartile=0.4938, median=0.4995, upper quartile=0.5052, upper whisker=0.5109}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.4167, lower quartile=0.4554, median=0.4940, upper quartile=0.5327, upper whisker=0.5714}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.3195, lower quartile=0.3696, median=0.4197, upper quartile=0.4697, upper whisker=0.5198}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.3195, lower quartile=0.3702, median=0.4209, upper quartile=0.4715, upper whisker=0.5222}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.5287, lower quartile=0.5394, median=0.5501, upper quartile=0.5608, upper whisker=0.5714}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.4881, lower quartile=0.4938, median=0.4995, upper quartile=0.5052, upper whisker=0.5109}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.3195, lower quartile=0.3696, median=0.4197, upper quartile=0.4697, upper whisker=0.5198}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\nextgroupplot[title={30-79}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.0000, lower quartile=0.3883, median=0.7022, upper quartile=0.8721, upper whisker=0.9796}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.0000, lower quartile=0.3883, median=0.7022, upper quartile=0.8721, upper whisker=0.9796}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.0000, lower quartile=0.3883, median=0.7022, upper quartile=0.9516, upper whisker=0.9796}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.0000, lower quartile=0.3858, median=0.7060, upper quartile=0.9396, upper whisker=0.9655}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.0000, lower quartile=0.3858, median=0.7022, upper quartile=0.9516, upper whisker=0.9796}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.0000, lower quartile=0.4235, median=0.7555, upper quartile=0.9086, upper whisker=0.9565}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.0000, lower quartile=0.3718, median=0.7583, upper quartile=0.9056, upper whisker=0.9500}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.0000, lower quartile=0.4429, median=0.7635, upper quartile=0.9086, upper whisker=0.9565}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\nextgroupplot[title={80-129}]
+\addplot+ [boxplot prepared={draw position=1, lower whisker=0.1000, lower quartile=0.4479, median=0.7154, upper quartile=0.9021, upper whisker=0.9722}, draw=c_ens_tuned, fill=c_ens_tuned, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=2, lower whisker=0.1000, lower quartile=0.4479, median=0.7154, upper quartile=0.9021, upper whisker=0.9722}, draw=c_rn_ef, fill=c_rn_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=3, lower whisker=0.0976, lower quartile=0.4479, median=0.7643, upper quartile=0.8788, upper whisker=0.9722}, draw=c_rn_lf, fill=c_rn_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=4, lower whisker=0.0976, lower quartile=0.4576, median=0.7643, upper quartile=0.9096, upper whisker=0.9722}, draw=c_rn_rs, fill=c_rn_rs, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=5, lower whisker=0.1000, lower quartile=0.4479, median=0.7643, upper quartile=0.9101, upper whisker=0.9722}, draw=c_ens3_scaff, fill=c_ens3_scaff, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=6, lower whisker=0.3729, lower quartile=0.5786, median=0.8141, upper quartile=0.9096, upper whisker=0.9722}, draw=c_lf, fill=c_lf, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=7, lower whisker=0.1026, lower quartile=0.4526, median=0.7839, upper quartile=0.8705, upper whisker=0.9589}, draw=c_ef, fill=c_ef, fill opacity=0.20, very thick] coordinates {};
+\addplot+ [boxplot prepared={draw position=8, lower whisker=0.1026, lower quartile=0.5018, median=0.7982, upper quartile=0.9143, upper whisker=0.9722}, draw=c_rs, fill=c_rs, fill opacity=0.20, very thick] coordinates {};
+\end{groupplot}
+\end{tikzpicture}

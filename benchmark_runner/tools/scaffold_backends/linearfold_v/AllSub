@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _ct import CtStruct, write_ct  # noqa: E402
+from _docker import docker_run_stream  # noqa: E402
+
+
+def read_single_fasta(path: Path) -> tuple[str, str]:
+    seq_id = "seq"
+    seq_parts: list[str] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith(">"):
+            seq_id = ln[1:].strip() or seq_id
+            continue
+        seq_parts.append(ln)
+    return seq_id, "".join(seq_parts).upper().replace("T", "U")
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        sys.stderr.write("USAGE: AllSub <fasta> <out.ct> [options]\n")
+        return 2
+    fasta = Path(argv[1])
+    out_ct = Path(argv[2])
+    # We accept (and mostly ignore) RNAstructure flags like -a/-p/-t to be drop-in compatible.
+    abs_window = None
+    for i, tok in enumerate(argv[3:], start=3):
+        if tok in {"-a", "-A"} and i + 1 < len(argv):
+            try:
+                abs_window = float(argv[i + 1])
+            except ValueError:
+                abs_window = None
+
+    docker_image = (os.environ.get("LINEARFOLD_DOCKER_IMAGE") or "").strip()
+    beamsize = int(os.environ.get("LINEARFOLD_BEAMSIZE", "100"))
+    max_structs = int(os.environ.get("RNANNEAL_SS_SUBOPT_MAX", "200"))
+    delta = float(os.environ.get("LINEARFOLD_DELTA", "80.0"))
+    if abs_window is not None:
+        delta = float(abs_window)
+
+    seq_id, seq = read_single_fasta(fasta)
+    fasta_text = f">{seq_id}\n{seq}\n"
+    if docker_image:
+        rc, out = docker_run_stream(
+            image=docker_image,
+            args=["--fasta", "-V", "-b", str(beamsize), "--zuker", "--delta", str(delta)],
+            stdin_text=fasta_text,
+        )
+    else:
+        repo_root = Path(__file__).resolve().parents[4]
+        linearfold = Path(
+            os.environ.get("LINEARFOLD_BIN")
+            or (repo_root / "external" / "LinearFold" / "linearfold")
+        )
+        proc = subprocess.run(
+            [str(linearfold), "--fasta", "-V", "-b", str(beamsize), "--zuker", "--delta", str(delta)],
+            input=fasta_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        rc, out = int(proc.returncode), proc.stdout
+    if rc != 0:
+        sys.stderr.write(out)
+        write_ct(seq=seq, structs=[CtStruct("." * len(seq), 0.0, seq_id)], out_path=out_ct)
+        return 0
+
+    structs: list[CtStruct] = []
+    seen: set[str] = set()
+    energy_re = re.compile(r"\(([-+]?\d+(?:\.\d+)?)\)")
+    for line in out.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        tok = s.split()[0]
+        if len(tok) != len(seq):
+            continue
+        if any(ch not in ".()[]{}<>" for ch in tok):
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        m = energy_re.search(s)
+        energy = float(m.group(1)) if m else 0.0
+        structs.append(CtStruct(tok, energy, seq_id))
+        if len(structs) >= max_structs:
+            break
+
+    if not structs:
+        structs = [CtStruct("." * len(seq), 0.0, seq_id)]
+
+    out_ct.parent.mkdir(parents=True, exist_ok=True)
+    write_ct(seq=seq, structs=structs, out_path=out_ct)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

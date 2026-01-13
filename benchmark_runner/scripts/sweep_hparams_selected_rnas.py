@@ -49,6 +49,7 @@ def _build_pred_cmd(base: dict[str, Any], overrides: dict[str, Any]) -> list[str
 
     cmd = [
         f"DATAPATH={args['datapath']}",
+        f"RNASTRUCTURE_DOCKER_IMAGE={args.get('rnastructure_docker_image','')}",
         f"PYTHONPATH={args['py_path']}",
         args["python_bin"],
         "-m",
@@ -199,18 +200,26 @@ def main() -> None:
     predict = defaults.get("predict", {})
     rnastructure = paths.get("rnastructure", {})
 
+    def resolve_from_root(p: str) -> str:
+        if not p:
+            return p
+        if os.path.isabs(p):
+            return p
+        return str((br_root / p).resolve())
+
     base = {
         "python_bin": str((br_root / ".venv" / "bin" / "python").resolve()),
         "py_path": str(br_root / "src"),
         "rfam_cm": paths.get("rfam_cm", ""),
         "infernal_bin": paths.get("infernal_bin", ""),
         "rscape": paths.get("rscape", ""),
-        "allsub_exe": rnastructure.get("allsub", ""),
-        "duplex_exe": rnastructure.get("duplex", ""),
-        "fold_exe": rnastructure.get("fold", ""),
-        "partition_exe": rnastructure.get("partition", ""),
-        "probplot_exe": rnastructure.get("probplot", ""),
+        "allsub_exe": resolve_from_root(str(rnastructure.get("allsub", ""))),
+        "duplex_exe": resolve_from_root(str(rnastructure.get("duplex", ""))),
+        "fold_exe": resolve_from_root(str(rnastructure.get("fold", ""))),
+        "partition_exe": resolve_from_root(str(rnastructure.get("partition", ""))),
+        "probplot_exe": resolve_from_root(str(rnastructure.get("probplot", ""))),
         "datapath": rnastructure.get("datapath", ""),
+        "rnastructure_docker_image": str(rnastructure.get("docker_image", "")),
         "top_k": int(args.top_k if args.top_k is not None else predict.get("top_k", 100)),
         "n_samples": int(
             args.n_samples if args.n_samples is not None else predict.get("n_samples", 1000)

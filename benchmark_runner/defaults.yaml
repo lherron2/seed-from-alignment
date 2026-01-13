@@ -34,18 +34,20 @@ paths:
   # R-scape binary path (R-scape)
   rscape: "/home/lukas/research/seed-from-alignment/seed-from-alignment-claude/rscape_v2.6.4/src/R-scape"
   rnastructure:
+    # If set, `benchmark_runner/tools/rnastructure_docker/*` wrappers will use this image.
+    docker_image: "327091918650.dkr.ecr.us-east-1.amazonaws.com/rnanneal/rnastructure:v6.4.0"
     # RNAstructure AllSub executable
-    allsub: "/home/lukas/research/RNAstructure/exe/AllSub"
+    allsub: "tools/rnastructure_docker/AllSub"
     # RNAstructure DuplexFold executable
-    duplex: "/home/lukas/research/RNAstructure/exe/DuplexFold"
+    duplex: "tools/rnastructure_docker/DuplexFold"
     # RNAstructure Fold (MFE) executable
-    fold: "/home/lukas/research/RNAstructure/exe/Fold"
+    fold: "tools/rnastructure_docker/Fold"
     # RNAstructure Partition executable (PF)
-    partition: "/home/lukas/research/RNAstructure/exe/Partition"
+    partition: "tools/rnastructure_docker/Partition"
     # RNAstructure ProbabilityPlot executable (PF)
-    probplot: "/home/lukas/research/RNAstructure/exe/ProbabilityPlot"
+    probplot: "tools/rnastructure_docker/ProbabilityPlot"
     # RNAstructure DATAPATH (thermodynamics tables)
-    datapath: "/home/lukas/research/RNAstructure/data_tables"
+    datapath: ""
 
 predict:
   # Number of top structures to emit

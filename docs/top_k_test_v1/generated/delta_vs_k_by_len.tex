@@ -1,0 +1,17 @@
+\begin{tikzpicture}
+\definecolor{c_short}{HTML}{1F77B4}
+\definecolor{c_long}{HTML}{D62728}
+\begin{axis}[
+  width=0.9\linewidth, height=0.55\linewidth,
+  xmin=0, xlabel={K (structures kept)}, ylabel={Mean $\Delta$F1 vs @1},
+  title={Do longer RNAs gain more from larger K?},
+  grid=both, grid style={black!10},
+  legend pos=north west, legend cell align=left,
+  xtick={1,50,100,200,500},
+]
+\addplot+[very thick, mark=none, draw=c_short] table[x=k,y=delta] {generated/delta_vs_k_short.dat};
+\addlegendentry{short (<=150)}
+\addplot+[very thick, mark=none, draw=c_long] table[x=k,y=delta] {generated/delta_vs_k_long.dat};
+\addlegendentry{long (151-300)}
+\end{axis}
+\end{tikzpicture}

@@ -59,6 +59,7 @@ emit("FOLD_EXE", rnastructure.get("fold"))
 emit("PARTITION_EXE", rnastructure.get("partition"))
 emit("PROBPLOT_EXE", rnastructure.get("probplot"))
 emit("DATAPATH", rnastructure.get("datapath"))
+emit("RNASTRUCTURE_DOCKER_IMAGE", rnastructure.get("docker_image"))
 
 emit("TOP_K", predict.get("top_k"))
 emit("LENGTH_ADAPTIVE", predict.get("length_adaptive"))
@@ -117,14 +118,33 @@ PY
 eval "$CFG_VARS"
 
 : "${DATAPATH:=}"
+: "${RNASTRUCTURE_DOCKER_IMAGE:=}"
 : "${TOP_K:=20}"
 : "${LENGTH_ADAPTIVE:=false}"
 : "${INCLUDE_UNFIXED_SAMPLING:=}"
 : "${MAX_SCAFFOLDS:=20}"
 : "${MAX_SAMPLES_PER_SCAFFOLD:=200}"
 
+resolve_from_root() {
+  local p="${1:-}"
+  if [[ -z "$p" ]]; then
+    echo ""
+  elif [[ "$p" = /* ]]; then
+    echo "$p"
+  else
+    echo "$ROOT_DIR/$p"
+  fi
+}
+
+ALLSUB_EXE="$(resolve_from_root "$ALLSUB_EXE")"
+DUPLEX_EXE="$(resolve_from_root "$DUPLEX_EXE")"
+FOLD_EXE="$(resolve_from_root "$FOLD_EXE")"
+PARTITION_EXE="$(resolve_from_root "$PARTITION_EXE")"
+PROBPLOT_EXE="$(resolve_from_root "$PROBPLOT_EXE")"
+
 PRED_ARGS=(
   "DATAPATH=${DATAPATH}"
+  "RNASTRUCTURE_DOCKER_IMAGE=${RNASTRUCTURE_DOCKER_IMAGE}"
   "PYTHONPATH=$ROOT_DIR/src"
   "$PYTHON_BIN"
   "-m"

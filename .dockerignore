@@ -1,0 +1,27 @@
+.git
+.gitmodules
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.cache/
+**/node_modules/
+**/.venv/
+.venv/
+
+# Large/local datasets and artifacts (do not send as build context)
+benchmark_runner/data/
+benchmark_runner/**/generated/
+docs/**/generated/
+docs/**/*.pdf
+**/*.pdf
+**/*.tar.gz
+**/*.tgz
+**/*.zip
+gridsearch.db
+seeds.db
+

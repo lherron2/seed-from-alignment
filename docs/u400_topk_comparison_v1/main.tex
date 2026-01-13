@@ -1,0 +1,97 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\definecolor{ensc}{HTML}{1F77B4}
+\definecolor{lfc}{HTML}{FF7F0E}
+\definecolor{efc}{HTML}{2CA02C}
+
+\title{u400 benchmark: Ensemble RNAnneal-ss vs baselines across K --- v1}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Scope}
+Full u400 non-rRNA benchmark (FR3D/BGSU representative set, truth length $\le 400$). We compare an \textbf{ensemble} (RNAnneal-ss + LinearFold-V + EternaFold candidate pooling) to \textbf{LinearFold-V} and \textbf{EternaFold} across $K \in \{1,50,100,200,500\}$.
+
+\section*{Metrics}
+\begin{itemize}
+  \item \textbf{F1@K}: for each target, the \emph{best} F1 among the first $K$ ranked outputs (oracle within prefix).
+  \item \textbf{MCC@K}: MCC of the same structure that achieved best F1 within the first $K$ outputs.
+\end{itemize}
+
+\section*{Results}
+\input{generated/f1_table.tex}
+\input{generated/mcc_table.tex}
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+      width=\linewidth,
+      height=6cm,
+      xlabel={K (top-K prefix)},
+      ylabel={F1},
+      ymin=0, ymax=1,
+      xtick={1,50,100,200,500},
+      grid=major,
+      legend style={draw=none, font=\small, at={(0.5,-0.20)}, anchor=north, legend columns=3},
+    ]
+      \addplot[very thick, color=ensc, mark=none] table[x=k,y=ens_mean,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{Ensemble mean}
+      \addplot[very thick, color=ensc, dashed, mark=none] table[x=k,y=ens_median,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{Ensemble med}
+
+      \addplot[very thick, color=lfc, mark=none] table[x=k,y=lf_mean,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{LF-V mean}
+      \addplot[very thick, color=lfc, dashed, mark=none] table[x=k,y=lf_median,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{LF-V med}
+
+      \addplot[very thick, color=efc, mark=none] table[x=k,y=ef_mean,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{EFold mean}
+      \addplot[very thick, color=efc, dashed, mark=none] table[x=k,y=ef_median,col sep=comma] {generated/f1_wide.csv};
+      \addlegendentry{EFold med}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{F1 as a function of K (solid = mean, dashed = median; lines only).}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+      width=\linewidth,
+      height=6cm,
+      xlabel={K (top-K prefix)},
+      ylabel={MCC},
+      ymin=0, ymax=1,
+      xtick={1,50,100,200,500},
+      grid=major,
+      legend style={draw=none, font=\small, at={(0.5,-0.20)}, anchor=north, legend columns=3},
+    ]
+      \addplot[very thick, color=ensc, mark=none] table[x=k,y=ens_mean,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{Ensemble mean}
+      \addplot[very thick, color=ensc, dashed, mark=none] table[x=k,y=ens_median,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{Ensemble med}
+
+      \addplot[very thick, color=lfc, mark=none] table[x=k,y=lf_mean,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{LF-V mean}
+      \addplot[very thick, color=lfc, dashed, mark=none] table[x=k,y=lf_median,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{LF-V med}
+
+      \addplot[very thick, color=efc, mark=none] table[x=k,y=ef_mean,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{EFold mean}
+      \addplot[very thick, color=efc, dashed, mark=none] table[x=k,y=ef_median,col sep=comma] {generated/mcc_wide.csv};
+      \addlegendentry{EFold med}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{MCC as a function of K (solid = mean, dashed = median; lines only).}
+\end{figure}
+
+\end{document}

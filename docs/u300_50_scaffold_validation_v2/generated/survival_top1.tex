@@ -1,0 +1,29 @@
+\begin{tikzpicture}
+\definecolor{c_rn_rs}{HTML}{1F77B4}
+\definecolor{c_rn_lf}{HTML}{9467BD}
+\definecolor{c_rn_ef}{HTML}{D62728}
+\definecolor{c_rnastructure}{HTML}{7F7F7F}
+\definecolor{c_linearfold}{HTML}{FF7F0E}
+\definecolor{c_eternafold}{HTML}{2CA02C}
+\begin{axis}[
+  width=\linewidth, height=0.62\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={F1}, ylabel={1 - CDF},
+  title={Top-1 (F1@1)},
+  grid=both, grid style={black!10},
+  legend pos=north east, legend cell align=left,
+]
+\addplot+[const plot, very thick, draw=c_rn_rs] table[x=f1,y=survival] {generated/survival_top1_rn_rs.dat};
+\addlegendentry{RNss(RS) (p50=0.000)}
+\addplot+[const plot, very thick, draw=c_rn_lf] table[x=f1,y=survival] {generated/survival_top1_rn_lf.dat};
+\addlegendentry{RNss(LF) (p50=0.000)}
+\addplot+[const plot, very thick, draw=c_rn_ef] table[x=f1,y=survival] {generated/survival_top1_rn_ef.dat};
+\addlegendentry{RNss(EF) (p50=0.000)}
+\addplot+[const plot, very thick, draw=c_rnastructure] table[x=f1,y=survival] {generated/survival_top1_rnastructure.dat};
+\addlegendentry{RNAstr (p50=0.457)}
+\addplot+[const plot, very thick, draw=c_linearfold] table[x=f1,y=survival] {generated/survival_top1_linearfold.dat};
+\addlegendentry{LF-V (p50=0.496)}
+\addplot+[const plot, very thick, draw=c_eternafold] table[x=f1,y=survival] {generated/survival_top1_eternafold.dat};
+\addlegendentry{EFold (p50=0.532)}
+\end{axis}
+\end{tikzpicture}

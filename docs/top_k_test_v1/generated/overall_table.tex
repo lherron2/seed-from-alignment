@@ -1,0 +1,17 @@
+\begin{table}[ht]
+\centering
+\small
+\caption{Top-K oracle metrics vs output size (N=50; higher is better).}
+\label{tab:overall}
+\begin{tabular}{lrrrrrr}
+\toprule
+K & Mean F1 & Med F1 & Fail & Mean P & Mean R & Mean eff.K \\
+\midrule
+@1 & 0.536 & 0.530 & 6.0\% & 0.513 & 0.589 & 1.000 \\
+@50 & 0.629 & 0.617 & 2.0\% & 0.605 & 0.683 & 50.000 \\
+@100 & 0.649 & 0.691 & 2.0\% & 0.625 & 0.703 & 99.980 \\
+@200 & 0.673 & 0.697 & 0.0\% & 0.649 & 0.727 & 194.620 \\
+@500 & 0.733 & 0.754 & 0.0\% & 0.710 & 0.785 & 426.840 \\
+\bottomrule
+\end{tabular}
+\end{table}

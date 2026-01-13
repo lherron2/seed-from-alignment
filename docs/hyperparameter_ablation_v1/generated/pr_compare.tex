@@ -1,0 +1,25 @@
+\begin{tikzpicture}
+\definecolor{c_v3}{HTML}{7F7F7F}
+\definecolor{c_B4}{HTML}{1F77B4}
+\definecolor{c_U4}{HTML}{FF7F0E}
+\definecolor{c_R10}{HTML}{2CA02C}
+\definecolor{c_S150}{HTML}{D62728}
+\definecolor{c_K300}{HTML}{9467BD}
+\definecolor{c_Sc30}{HTML}{8C564B}
+\definecolor{c_Hi}{HTML}{000000}
+\begin{axis}[
+  width=0.9\linewidth, height=0.55\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={Recall}, ylabel={Precision},
+  title={Pair PR curves (top-100 pair frequencies)},
+  grid=both, grid style={black!10},
+  legend pos=south west, legend cell align=left,
+]
+\addplot+[very thick, draw=c_v3, dashed] table[x=recall,y=precision] {generated/pr_v3.dat};
+\addlegendentry{v3}
+\addplot+[very thick, draw=c_B4, solid] table[x=recall,y=precision] {generated/pr_B4.dat};
+\addlegendentry{B4}
+\addplot+[very thick, draw=c_Hi, solid] table[x=recall,y=precision] {generated/pr_Hi.dat};
+\addlegendentry{Hi}
+\end{axis}
+\end{tikzpicture}

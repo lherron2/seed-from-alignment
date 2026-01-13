@@ -1,0 +1,58 @@
+\begin{tikzpicture}
+\definecolor{c_rn_rs}{HTML}{1F77B4}
+\definecolor{c_rn_lf}{HTML}{9467BD}
+\definecolor{c_rn_ef}{HTML}{D62728}
+\definecolor{c_rnastructure}{HTML}{7F7F7F}
+\definecolor{c_linearfold}{HTML}{FF7F0E}
+\definecolor{c_eternafold}{HTML}{2CA02C}
+\begin{groupplot}[
+  group style={group size=3 by 2, horizontal sep=1.2em, vertical sep=1.2em},
+  width=0.33\linewidth, height=0.33\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={Recall}, ylabel={Precision},
+  grid=both, grid style={black!10},
+]
+\nextgroupplot[title={30-79}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_30_79_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_30_79_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_30_79_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_30_79_eternafold.dat};
+\nextgroupplot[title={80-129}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_80_129_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_80_129_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_80_129_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_80_129_eternafold.dat};
+\nextgroupplot[title={130-179}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_130_179_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_130_179_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_130_179_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_130_179_eternafold.dat};
+\nextgroupplot[title={180-229}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_180_229_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_180_229_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_180_229_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_180_229_eternafold.dat};
+\nextgroupplot[title={230-279}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_230_279_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_230_279_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_230_279_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_230_279_eternafold.dat};
+\nextgroupplot[title={280-300}]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_rs.dat};
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_lf.dat};
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_bucket_280_300_rn_ef.dat};
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_bucket_280_300_rnastructure.dat};
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_bucket_280_300_linearfold.dat};
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_bucket_280_300_eternafold.dat};
+\end{groupplot}
+\end{tikzpicture}

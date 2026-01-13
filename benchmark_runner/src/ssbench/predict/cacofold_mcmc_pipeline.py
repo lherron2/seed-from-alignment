@@ -73,7 +73,9 @@ def ensure_rnastructure_datapath(*, exe_hint: Path | None = None) -> None:
     The benchmark runners usually export DATAPATH already; this is a defensive fallback for
     ad-hoc usage where it's missing.
     """
-    if os.environ.get("DATAPATH"):
+    # Treat an explicitly exported (possibly empty) DATAPATH as "set".
+    # This supports docker-wrapped RNAstructure executables, which provide their own in-container DATAPATH.
+    if "DATAPATH" in os.environ:
         return
     candidates: list[Path] = []
     if exe_hint is not None:
@@ -257,6 +259,10 @@ def build_topk_predictions(
     max_samples_per_scaffold: int,
     length_adaptive: bool,
     include_unfixed_sampling: bool,
+    inject_allsub_scaffolds: bool,
+    inject_allsub_scaffolds_max: int,
+    inject_allsub_timeout_s: float | None,
+    force_allsub_output: int,
 ) -> list[str]:
     # Import legacy modules from repo root.
     repo_root = Path(__file__).resolve().parents[4]
@@ -299,28 +305,34 @@ def build_topk_predictions(
 
     # Length-adaptive schedule: allocate more compute and reduce reliance on early refined ordering
     # for longer RNAs (151-300), where we empirically see weaker best-of-100 and late ranks.
-    s = clamp01((float(L_fasta) - 150.0) / 150.0) if length_adaptive else 0.0
+    len_scale = clamp01((float(L_fasta) - 150.0) / 150.0) if length_adaptive else 0.0
 
-    max_scaffolds_eff = int(max(1, round(float(max_scaffolds) * (1.0 + s))))
-    max_samples_per_scaffold_eff = int(max(1, round(float(max_samples_per_scaffold) * (1.0 + 2.0 * s))))
+    max_scaffolds_eff = int(max(1, round(float(max_scaffolds) * (1.0 + len_scale))))
+    max_samples_per_scaffold_eff = int(
+        max(1, round(float(max_samples_per_scaffold) * (1.0 + 2.0 * len_scale)))
+    )
 
-    burn_in_eff = int(max(0, round(float(burn_in) * (1.0 + 0.5 * s))))
-    n_samples_eff = int(max(0, round(float(n_samples) * (1.0 + 0.5 * s))))
+    burn_in_eff = int(max(0, round(float(burn_in) * (1.0 + 0.5 * len_scale))))
+    n_samples_eff = int(max(0, round(float(n_samples) * (1.0 + 0.5 * len_scale))))
     thin_eff = int(thin)
     if thin_eff <= 0:
         thin_eff = 1
 
     refine_max_seconds_eff = refine_max_seconds
     if refine_max_seconds_eff is not None:
-        refine_max_seconds_eff = float(refine_max_seconds_eff) * (1.0 + 9.0 * s)
+        refine_max_seconds_eff = float(refine_max_seconds_eff) * (1.0 + 9.0 * len_scale)
         refine_max_seconds_eff = min(float(refine_max_seconds_eff), 300.0)
 
-    refine_max_structures_eff = int(max(1, round(float(refine_max_structures) * (1.0 + 1.0 * s))))
-    refine_max_regions_eff = int(max(1, round(float(refine_max_regions) * (1.0 + 1.0 * s))))
-    refine_max_seeds_eff = int(max(1, round(float(refine_max_seeds) * (1.0 + 1.0 * s))))
-    refine_max_solutions_eff = int(max(1, round(float(refine_max_solutions) * (1.0 + 1.0 * s))))
+    refine_max_structures_eff = int(
+        max(1, round(float(refine_max_structures) * (1.0 + 1.0 * len_scale)))
+    )
+    refine_max_regions_eff = int(max(1, round(float(refine_max_regions) * (1.0 + 1.0 * len_scale))))
+    refine_max_seeds_eff = int(max(1, round(float(refine_max_seeds) * (1.0 + 1.0 * len_scale))))
+    refine_max_solutions_eff = int(
+        max(1, round(float(refine_max_solutions) * (1.0 + 1.0 * len_scale)))
+    )
     refine_kissing_candidates_eff = int(
-        max(1, round(float(refine_kissing_candidates) * (1.0 + 1.0 * s)))
+        max(1, round(float(refine_kissing_candidates) * (1.0 + 1.0 * len_scale)))
     )
 
     sample_cfg = legacy_pipeline.SampleConfig(
@@ -398,11 +410,123 @@ def build_topk_predictions(
     t_refine0 = time.perf_counter()
     refined_db = legacy_pipeline.refine_db(cfg, db_in=consensus_db, db_out=cfg.io.refined_db)
     t_refine1 = time.perf_counter()
+    # Defensive: refinement can occasionally yield no structures (e.g. fallback.sto + strict timeouts).
+    # Downstream stages (injection/sampling/ranking) require at least one scaffold; fall back to the
+    # consensus structure (or all-dots) to keep the run valid rather than crashing.
+    try:
+        refined_existing = rup.read_db_structures(refined_db)
+    except Exception:
+        refined_existing = []
+    if not refined_existing:
+        try:
+            seq = rup.read_ungapped_seq_from_sto(sto, seq_name)
+        except Exception:
+            seq = read_fasta_sequence(fasta)
+        fallback_struct = consensus_structs[0] if consensus_structs else ("." * len(seq))
+        refined_db.write_text(seq + "\n" + fallback_struct + "\n")
+        refined_existing = [fallback_struct]
+
     if mfe_struct is not None:
-        seq = rup.read_ungapped_seq_from_sto(sto, seq_name)
-        existing = rup.read_db_structures(refined_db)
-        if mfe_struct not in set(existing):
-            refined_db.write_text(seq + "\n" + "\n".join(existing + [mfe_struct]) + "\n")
+        try:
+            seq = rup.read_ungapped_seq_from_sto(sto, seq_name)
+        except Exception:
+            seq = read_fasta_sequence(fasta)
+        if mfe_struct not in set(refined_existing):
+            refined_existing = list(refined_existing) + [mfe_struct]
+            refined_db.write_text(seq + "\n" + "\n".join(refined_existing) + "\n")
+
+    # Inject additional backend-generated scaffolds *before* sampling so they can seed MCMC.
+    # This is the key change vs. the post-hoc "ensemble merge": these candidates become actual
+    # MCMC starting scaffolds in `sample_pk`.
+    if inject_allsub_scaffolds and inject_allsub_scaffolds_max > 0:
+        try:
+            full_seq_for_inject = rup.read_ungapped_seq_from_sto(sto, seq_name)
+        except Exception:
+            full_seq_for_inject = read_fasta_sequence(fasta)
+
+        def pairs_from_struct(struct: str) -> frozenset[tuple[int, int]]:
+            stack: list[int] = []
+            out: list[tuple[int, int]] = []
+            for i, ch in enumerate(struct):
+                if ch == "(":
+                    stack.append(i)
+                elif ch == ")":
+                    if not stack:
+                        continue
+                    j = stack.pop()
+                    out.append((j, i) if j < i else (i, j))
+            return frozenset(out)
+
+        def jaccard_dist(a: frozenset[tuple[int, int]], b: frozenset[tuple[int, int]]) -> float:
+            if not a and not b:
+                return 0.0
+            inter = len(a & b)
+            union = len(a | b)
+            return 1.0 - (inter / union if union else 0.0)
+
+        def select_diverse(structs: list[str], k: int) -> list[str]:
+            if k <= 0:
+                return []
+            if len(structs) <= k:
+                return list(structs)
+            items = [(s, pairs_from_struct(s), idx) for idx, s in enumerate(structs)]
+            chosen = [items[0]]
+            chosen_pairs = [items[0][1]]
+            chosen_set = {items[0][0]}
+            while len(chosen) < k:
+                best = None
+                best_u = None
+                for s, ps, order in items:
+                    if s in chosen_set:
+                        continue
+                    base = 1.0 - (order / max(1, len(items) - 1))
+                    min_d = min(jaccard_dist(ps, cp) for cp in chosen_pairs) if chosen_pairs else 1.0
+                    u = base + 0.8 * min_d
+                    if best_u is None or u > best_u:
+                        best = (s, ps, order)
+                        best_u = u
+                if best is None:
+                    break
+                chosen.append(best)
+                chosen_set.add(best[0])
+                chosen_pairs.append(best[1])
+            return [s for s, _ps, _ord in chosen]
+
+        try:
+            allsub_structs = rup.call_rnastructure_allsub(
+                allsub_exe,
+                full_seq_for_inject,
+                absolute_energy=None,
+                percent_energy=None,
+                extra_args=None,
+                timeout_s=inject_allsub_timeout_s,
+            )
+        except Exception:
+            allsub_structs = []
+
+        pool: list[str] = []
+        seen_pool: set[str] = set()
+        for db, _e in allsub_structs:
+            if len(db) != len(full_seq_for_inject):
+                continue
+            if db in seen_pool:
+                continue
+            seen_pool.add(db)
+            pool.append(db)
+            if len(pool) >= max(200, int(inject_allsub_scaffolds_max) * 5):
+                break
+
+        if pool:
+            selected = select_diverse(pool, int(inject_allsub_scaffolds_max))
+            existing = rup.read_db_structures(refined_db)
+            existing_set = set(existing)
+            merged = list(existing)
+            for struct_db in selected:
+                if struct_db in existing_set:
+                    continue
+                merged.append(struct_db)
+                existing_set.add(struct_db)
+            refined_db.write_text(full_seq_for_inject + "\n" + "\n".join(merged) + "\n")
     t_sample_fixed0 = time.perf_counter()
     sampled_db = legacy_pipeline.sample_pk(cfg, refined_db=refined_db, out_db=cfg.io.sampled_db)
     t_sample_fixed1 = time.perf_counter()
@@ -662,7 +786,9 @@ def build_topk_predictions(
 
     sampled_records.sort(key=lambda x: x[5], reverse=True)
     base_pool = max(2000, int(top_k) * 20)
-    max_sampled_pool = int(round(float(base_pool) * (1.0 + 2.0 * s))) if s > 0 else base_pool
+    max_sampled_pool = (
+        int(round(float(base_pool) * (1.0 + 2.0 * len_scale))) if len_scale > 0 else base_pool
+    )
     top_support = sampled_records[: max_sampled_pool // 2]
     top_pk = sorted(sampled_records, key=lambda x: (x[2], x[3], x[5]), reverse=True)[: max_sampled_pool // 2]
 
@@ -688,7 +814,7 @@ def build_topk_predictions(
     # impactful when cmscan has no hit (fallback.sto) and the refined variants are local edits of an
     # incorrect MFE scaffold.
     seed_candidates: list[dict[str, object]] = []
-    if thermo_mode != "off" and thermo_weight > 0 and seed_boost:
+    if thermo_mode != "off" and thermo_weight > 0 and (seed_boost or force_allsub_output > 0):
         if not thermo_structs_full and allsub_exe.exists():
             try:
                 thermo_structs_full = rup.call_rnastructure_allsub(allsub_exe, full_seq)
@@ -696,8 +822,13 @@ def build_topk_predictions(
                 thermo_structs_full = []
         allsub_pool = thermo_structs_full[:200]
         for seed_order, (struct, energy) in enumerate(allsub_pool, start=1):
+            # Normally we skip AllSub structures already present in the refined/sampled pool to
+            # avoid ballooning the candidate list. When force_allsub_output>0, we intentionally
+            # keep them as explicit seed candidates so the final top-K selection can include them
+            # even if refined-order/MMR heuristics would otherwise drop them.
             if struct in refined_candidates or struct in pooled_structs:
-                continue
+                if force_allsub_output <= 0:
+                    continue
             pairs = normalized_pairs(struct)
             pk_pairs_count, total_crossings, max_cross = compute_pk_stats(pairs)
             support_sum = float(sum(weights.get(p, 0.0) for p in pairs))
@@ -854,7 +985,7 @@ def build_topk_predictions(
         "pk_low": (0.25 * pk_base, 1.0),
         "no_pair_pen": (None, 0.0),
     }
-    if s > 0 and pair_penalty:
+    if len_scale > 0 and pair_penalty:
         # Encourage inclusion of sparser candidates for long sequences, where over-pairing is a
         # common failure mode and F1@100 is sensitive to FP-heavy structures.
         scorers["pair_pen2"] = (None, 2.0)
@@ -950,7 +1081,7 @@ def build_topk_predictions(
                 },
                 "sequence_length": int(L_fasta),
                 "length_adaptive": bool(length_adaptive),
-                "length_adaptive_scale": float(s),
+                "length_adaptive_scale": float(len_scale),
                 "effective": {
                     "n_samples": int(n_samples_eff),
                     "burn_in": int(burn_in_eff),
@@ -1034,19 +1165,23 @@ def build_topk_predictions(
     # preserve a large prefix of refined structures when covariation is absent.
     nseq = len(seqs)
     refined_prefix = 0
+    reserved_allsub = max(0, min(int(force_allsub_output), int(K)))
     if refined_all:
         if rfam_id == "no_rfam_hit":
             # For the fallback-only regime, refined candidates are local edits of an MFE scaffold
             # and can miss the true global fold; reserve substantial budget for diverse thermo seeds.
             refined_prefix = min(len(refined_all), min(K, max(60, int(round(0.70 * K)))))
         elif nseq <= 1:
-            if s > 0:
-                frac = 0.80 - 0.40 * s  # 0.80 @ <=150nt -> 0.40 @ 300nt
+            if len_scale > 0:
+                frac = 0.80 - 0.40 * len_scale  # 0.80 @ <=150nt -> 0.40 @ 300nt
                 refined_prefix = min(len(refined_all), min(K, max(20, int(round(frac * K)))))
             else:
                 refined_prefix = min(len(refined_all), min(K, max(80, int(round(0.80 * K)))))
         else:
             refined_prefix = min(len(refined_all), min(K, max(20, int(round(0.30 * K)))))
+
+    if reserved_allsub > 0:
+        refined_prefix = min(refined_prefix, max(0, int(K) - int(reserved_allsub)))
 
     # If we generated many helix seeds (very sparse scaffold), cap refined-prefix to leave room.
     # This helps AU-rich / low-information targets where the true structure is a small helix that
@@ -1061,7 +1196,7 @@ def build_topk_predictions(
             )
 
     if refined_prefix > 0:
-        if s > 0:
+        if len_scale > 0:
             refined_pick = sorted(refined_all, key=lambda c: (float(c["rank_combo"]), str(c["struct"])))
         else:
             refined_pick = sorted(refined_all, key=lambda c: int(c.get("refined_order", 10**9)))
@@ -1103,6 +1238,48 @@ def build_topk_predictions(
         if str(cand["struct"]) in selected_structs:
             continue
         add(cand)
+
+    # If configured, ensure we include a large slice of AllSub-like candidates in the final top-K.
+    # This is important for scaffold backends (LF/EF) where suboptimals can contain the best-of-100
+    # structure, and where our proxy energy scorers might otherwise over-prioritize refined ordering.
+    if reserved_allsub > 0:
+        allsub_pool = [c for c in candidates if str(c.get("seed_kind", "")) == "allsub"]
+
+        def _seed_order(c: dict[str, object]) -> int:
+            try:
+                return int(c.get("seed_order", 10**9))
+            except Exception:
+                return 10**9
+
+        allsub_sorted = sorted(allsub_pool, key=lambda c: (_seed_order(c), str(c["struct"])))
+
+        def _pick_evenly(pool: list[dict[str, object]], k: int) -> list[dict[str, object]]:
+            if k <= 0 or not pool:
+                return []
+            if k >= len(pool):
+                return pool
+            if k == 1:
+                return [pool[len(pool) // 2]]
+            idxs = sorted({int(round(i * (len(pool) - 1) / (k - 1))) for i in range(k)})
+            return [pool[i] for i in idxs]
+
+        need = min(reserved_allsub, max(0, int(K) - len(selected)))
+        if need > 0 and allsub_sorted:
+            # For @100 benchmarking, the best candidate is often within the first ~100 suboptimals.
+            # Prefer to draw from that span, but oversample to compensate for dedup with already-
+            # selected refined candidates (common when AllSub scaffolds are also refined).
+            span = min(len(allsub_sorted), max(100, int(need)))
+            pool = allsub_sorted[:span]
+            probe_n = min(len(pool), max(int(need), int(need) * 3))
+            probe = _pick_evenly(pool, probe_n)
+            added = 0
+            for cand in probe + pool + allsub_sorted:
+                if added >= need or len(selected) >= K:
+                    break
+                if str(cand["struct"]) in selected_structs:
+                    continue
+                add(cand)
+                added += 1
 
     # Guardrail: keep some explicitly-injected seeds for weak-evidence cases.
     seed_all = [c for c in candidates if bool(c.get("is_seed"))]
@@ -1180,6 +1357,8 @@ def build_topk_predictions(
         score_weight: float,
         diversity_weight: float,
     ) -> dict[str, object] | None:
+        # Back-compat helper (kept for small K). For large K, recomputing min-distance
+        # to all selected pairs inside the inner loop is prohibitively expensive.
         best: dict[str, object] | None = None
         best_u: float | None = None
         best_tie: tuple[float, str] | None = None
@@ -1208,17 +1387,97 @@ def build_topk_predictions(
         score_weight: float,
         diversity_weight: float,
     ) -> None:
+        # For large K, naive MMR is O(k * |pool| * |selected|) because it recomputes the
+        # min-distance to the selected set for every candidate at every selection step.
+        #
+        # Use an incremental approximation: maintain each candidate's current min-distance to
+        # the selected set and update it after each addition. This reduces the complexity to
+        # O(k * |pool|) jaccard computations (plus an O(|pool| * |selected|) initialization).
+        k = int(k)
+        if k <= 0 or not pool:
+            return
+
+        # Heuristic threshold: once K grows beyond 150, the incremental path is much faster.
+        # (For K<=100, the original behavior is already OK and keeps exact tie-breaking.)
+        if K <= 150:
+            for _ in range(k):
+                if len(selected) >= K:
+                    return
+                nxt = mmr_pick(
+                    pool,
+                    score_key=score_key,
+                    score_weight=score_weight,
+                    diversity_weight=diversity_weight,
+                )
+                if nxt is None:
+                    return
+                add(nxt)
+            return
+
+        structs = [str(c["struct"]) for c in pool]
+        pairs_list: list[frozenset[tuple[int, int]]] = []
+        scores: list[float] = []
+        for c in pool:
+            ps = c["pairs"]
+            assert isinstance(ps, frozenset)
+            pairs_list.append(ps)
+            scores.append(float(c[score_key]))
+
+        # Initialize min distances to the current selected set.
+        min_dist = [1.0] * len(pool)
+        if selected_pairs:
+            for i, ps in enumerate(pairs_list):
+                md = 1.0
+                for sp in selected_pairs:
+                    d = jaccard_distance(ps, sp)
+                    if d < md:
+                        md = d
+                        if md <= 0.0:
+                            break
+                min_dist[i] = md
+
         for _ in range(k):
             if len(selected) >= K:
                 return
-            nxt = mmr_pick(pool, score_key=score_key, score_weight=score_weight, diversity_weight=diversity_weight)
-            if nxt is None:
+
+            best_i: int | None = None
+            best_u: float | None = None
+            best_tie: tuple[float, str] | None = None
+            for i, cand in enumerate(pool):
+                struct = structs[i]
+                if struct in selected_structs:
+                    continue
+                base = 1.0 - scores[i]
+                u = score_weight * base + diversity_weight * min_dist[i]
+                tie = (scores[i], struct)
+                if best_u is None or u > best_u or (u == best_u and tie < (best_tie or tie)):
+                    best_i = i
+                    best_u = u
+                    best_tie = tie
+
+            if best_i is None:
                 return
+
+            nxt = pool[best_i]
             add(nxt)
+            new_pairs = pairs_list[best_i]
+
+            # Update min-distances in one pass.
+            for i in range(len(pool)):
+                struct = structs[i]
+                if struct in selected_structs:
+                    continue
+                d = jaccard_distance(pairs_list[i], new_pairs)
+                if d < min_dist[i]:
+                    min_dist[i] = d
 
     # Bucket 1: energy-ish (ensemble rank combo), mild diversity.
     # Anchor on the original/base scorer to avoid dropping high-quality candidates.
-    pool_limit = int(round(float(max(2000, K * 20)) * (1.0 + 2.0 * s))) if s > 0 else max(2000, K * 20)
+    pool_limit = (
+        int(round(float(max(2000, K * 20)) * (1.0 + 2.0 * len_scale)))
+        if len_scale > 0
+        else max(2000, K * 20)
+    )
     base_pool = sorted(candidates, key=lambda c: (float(c["rank_base"]), str(c["struct"])))
     base_pool = base_pool[:pool_limit]
     select_bucket(base_pool, q_energy, score_key="rank_base", score_weight=1.0, diversity_weight=0.25)
@@ -1386,6 +1645,41 @@ def main() -> None:
             "Defaults to enabled when --length-adaptive is set."
         ),
     )
+    parser.add_argument(
+        "--reuse-cacofold-root",
+        default=None,
+        help=(
+            "Optional directory containing per-target CaCoFold outputs to reuse (avoids rerunning cmscan/R-scape). "
+            "Expected layout: {reuse_root}/{safe_id}/ with cmscan.tblout and *.cacofold.sto/*.cov."
+        ),
+    )
+    parser.add_argument(
+        "--inject-allsub-scaffolds",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Inject AllSub-like suboptimals into the scaffold pool before MCMC sampling (default: true).",
+    )
+    parser.add_argument(
+        "--inject-allsub-scaffolds-max",
+        type=int,
+        default=25,
+        help="Max number of injected AllSub-like scaffolds per target (default: 25).",
+    )
+    parser.add_argument(
+        "--inject-allsub-timeout-s",
+        type=float,
+        default=10.0,
+        help="Timeout (seconds) for generating injected AllSub-like scaffolds (default: 10s).",
+    )
+    parser.add_argument(
+        "--force-allsub-output",
+        type=int,
+        default=0,
+        help=(
+            "Force inclusion of this many AllSub-like candidates in the final top-K (default: 0). "
+            "Useful for LF/EF scaffold backends where best-of-100 often comes from suboptimals."
+        ),
+    )
     parser.add_argument("fasta", help="Input FASTA")
     parser.add_argument("outdir", help="Output dir")
     args = parser.parse_args()
@@ -1405,26 +1699,46 @@ def main() -> None:
     # (e.g. '&') to make downstream tools happy. Ambiguous bases like 'X' are preserved.
     fasta_had_nonstandard_bases = bool(sanitized_changed)
 
-    try:
-        sto, cov, seq_id, rfam_id = run_cacofold(
-            fasta=fasta_for_tools,
-            out_dir=out_dir,
-            cm_db=Path(args.cm_db),
-            rscape=args.rscape,
-            infernal_bin=Path(args.infernal_bin) if args.infernal_bin else None,
-        )
-    except SystemExit as exc:
-        if "No Rfam hit found" not in str(exc):
-            raise
-        if args.fold_exe is None:
-            raise
-        sto, seq_id = build_fallback_sto(
-            fasta=fasta_for_tools,
-            out_dir=out_dir,
-            fold_exe=Path(args.fold_exe),
-        )
-        cov = None
-        rfam_id = "no_rfam_hit"
+    sto: Path | None = None
+    cov: Path | None = None
+    seq_id = parse_fasta_id(fasta_for_tools)
+    rfam_id = "unknown"
+
+    reused = False
+    if args.reuse_cacofold_root:
+        reuse_root = Path(str(args.reuse_cacofold_root)).expanduser().resolve()
+        reuse_dir = reuse_root / out_dir.name
+        if reuse_dir.is_dir():
+            sto = find_cacofold_sto(reuse_dir)
+            cov = find_cacofold_cov(reuse_dir)
+            tbl = reuse_dir / "cmscan.tblout"
+            model = parse_tblout_top_hit(tbl) if tbl.exists() else None
+            if model:
+                rfam_id = model
+            if sto is not None:
+                reused = True
+
+    if not reused:
+        try:
+            sto, cov, seq_id, rfam_id = run_cacofold(
+                fasta=fasta_for_tools,
+                out_dir=out_dir,
+                cm_db=Path(args.cm_db),
+                rscape=args.rscape,
+                infernal_bin=Path(args.infernal_bin) if args.infernal_bin else None,
+            )
+        except SystemExit as exc:
+            if "No Rfam hit found" not in str(exc):
+                raise
+            if args.fold_exe is None:
+                raise
+            sto, seq_id = build_fallback_sto(
+                fasta=fasta_for_tools,
+                out_dir=out_dir,
+                fold_exe=Path(args.fold_exe),
+            )
+            cov = None
+            rfam_id = "no_rfam_hit"
     if sto is None:
         if args.fold_exe is None:
             raise SystemExit("No CaCoFold .sto produced and --fold-exe missing")
@@ -1523,6 +1837,12 @@ def main() -> None:
             if args.include_unfixed_sampling is None
             else bool(args.include_unfixed_sampling)
         ),
+        inject_allsub_scaffolds=bool(args.inject_allsub_scaffolds),
+        inject_allsub_scaffolds_max=int(args.inject_allsub_scaffolds_max),
+        inject_allsub_timeout_s=float(args.inject_allsub_timeout_s)
+        if args.inject_allsub_timeout_s is not None
+        else None,
+        force_allsub_output=int(args.force_allsub_output),
     )
 
     # Write predictions.db

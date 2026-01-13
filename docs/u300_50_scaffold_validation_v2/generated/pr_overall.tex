@@ -1,0 +1,29 @@
+\begin{tikzpicture}
+\definecolor{c_rn_rs}{HTML}{1F77B4}
+\definecolor{c_rn_lf}{HTML}{9467BD}
+\definecolor{c_rn_ef}{HTML}{D62728}
+\definecolor{c_rnastructure}{HTML}{7F7F7F}
+\definecolor{c_linearfold}{HTML}{FF7F0E}
+\definecolor{c_eternafold}{HTML}{2CA02C}
+\begin{axis}[
+  width=0.9\linewidth, height=0.55\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={Recall}, ylabel={Precision},
+  title={Pair PR curves from top-100 pair frequencies},
+  grid=both, grid style={black!10},
+  legend pos=south west, legend cell align=left,
+]
+\addplot+[very thick, draw=c_rn_rs] table[x=recall,y=precision] {generated/pr_overall_rn_rs.dat};
+\addlegendentry{RNss(RS)}
+\addplot+[very thick, draw=c_rn_lf] table[x=recall,y=precision] {generated/pr_overall_rn_lf.dat};
+\addlegendentry{RNss(LF)}
+\addplot+[very thick, draw=c_rn_ef] table[x=recall,y=precision] {generated/pr_overall_rn_ef.dat};
+\addlegendentry{RNss(EF)}
+\addplot+[very thick, draw=c_rnastructure] table[x=recall,y=precision] {generated/pr_overall_rnastructure.dat};
+\addlegendentry{RNAstr}
+\addplot+[very thick, draw=c_linearfold] table[x=recall,y=precision] {generated/pr_overall_linearfold.dat};
+\addlegendentry{LF-V}
+\addplot+[very thick, draw=c_eternafold] table[x=recall,y=precision] {generated/pr_overall_eternafold.dat};
+\addlegendentry{EFold}
+\end{axis}
+\end{tikzpicture}

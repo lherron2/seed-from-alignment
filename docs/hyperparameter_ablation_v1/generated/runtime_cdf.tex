@@ -1,0 +1,36 @@
+\begin{tikzpicture}
+\definecolor{c_v3}{HTML}{7F7F7F}
+\definecolor{c_B4}{HTML}{1F77B4}
+\definecolor{c_U4}{HTML}{FF7F0E}
+\definecolor{c_R10}{HTML}{2CA02C}
+\definecolor{c_S150}{HTML}{D62728}
+\definecolor{c_K300}{HTML}{9467BD}
+\definecolor{c_Sc30}{HTML}{8C564B}
+\definecolor{c_Hi}{HTML}{000000}
+\begin{axis}[
+  width=\linewidth, height=0.62\linewidth,
+  xlabel={Seconds}, ylabel={CDF},
+  title={Runtime CDF (per target)},
+  grid=both, grid style={black!10},
+  legend style={font=\scriptsize},
+  legend columns=2,
+  legend pos=south east, legend cell align=left,
+]
+\addplot+[const plot, very thick, draw=c_v3, dashed] table[x=sec,y=cdf] {generated/runtime_cdf_v3.dat};
+\addlegendentry{v3 (p50=18.9s)}
+\addplot+[const plot, very thick, draw=c_B4, solid] table[x=sec,y=cdf] {generated/runtime_cdf_B4.dat};
+\addlegendentry{B4 (p50=18.7s)}
+\addplot+[const plot, very thick, draw=c_U4, solid] table[x=sec,y=cdf] {generated/runtime_cdf_U4.dat};
+\addlegendentry{U4 (p50=19.0s)}
+\addplot+[const plot, very thick, draw=c_R10, solid] table[x=sec,y=cdf] {generated/runtime_cdf_R10.dat};
+\addlegendentry{R10 (p50=18.1s)}
+\addplot+[const plot, very thick, draw=c_S150, solid] table[x=sec,y=cdf] {generated/runtime_cdf_S150.dat};
+\addlegendentry{S150 (p50=19.0s)}
+\addplot+[const plot, very thick, draw=c_K300, solid] table[x=sec,y=cdf] {generated/runtime_cdf_K300.dat};
+\addlegendentry{K300 (p50=18.5s)}
+\addplot+[const plot, very thick, draw=c_Sc30, solid] table[x=sec,y=cdf] {generated/runtime_cdf_Sc30.dat};
+\addlegendentry{Sc30 (p50=18.4s)}
+\addplot+[const plot, very thick, draw=c_Hi, solid] table[x=sec,y=cdf] {generated/runtime_cdf_Hi.dat};
+\addlegendentry{Hi (p50=18.1s)}
+\end{axis}
+\end{tikzpicture}

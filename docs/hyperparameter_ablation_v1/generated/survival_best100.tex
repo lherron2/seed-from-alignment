@@ -1,0 +1,37 @@
+\begin{tikzpicture}
+\definecolor{c_v3}{HTML}{7F7F7F}
+\definecolor{c_B4}{HTML}{1F77B4}
+\definecolor{c_U4}{HTML}{FF7F0E}
+\definecolor{c_R10}{HTML}{2CA02C}
+\definecolor{c_S150}{HTML}{D62728}
+\definecolor{c_K300}{HTML}{9467BD}
+\definecolor{c_Sc30}{HTML}{8C564B}
+\definecolor{c_Hi}{HTML}{000000}
+\begin{axis}[
+  width=\linewidth, height=0.62\linewidth,
+  xmin=0, xmax=1, ymin=0, ymax=1,
+  xlabel={F1}, ylabel={1 - CDF},
+  title={Best-of-100 (F1@100)},
+  grid=both, grid style={black!10},
+  legend style={font=\scriptsize},
+  legend columns=2,
+  legend pos=north east, legend cell align=left,
+]
+\addplot+[const plot, very thick, draw=c_v3, dashed] table[x=f1,y=survival] {generated/survival_best100_v3.dat};
+\addlegendentry{v3 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_B4, solid] table[x=f1,y=survival] {generated/survival_best100_B4.dat};
+\addlegendentry{B4 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_U4, solid] table[x=f1,y=survival] {generated/survival_best100_U4.dat};
+\addlegendentry{U4 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_R10, solid] table[x=f1,y=survival] {generated/survival_best100_R10.dat};
+\addlegendentry{R10 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_S150, solid] table[x=f1,y=survival] {generated/survival_best100_S150.dat};
+\addlegendentry{S150 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_K300, solid] table[x=f1,y=survival] {generated/survival_best100_K300.dat};
+\addlegendentry{K300 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_Sc30, solid] table[x=f1,y=survival] {generated/survival_best100_Sc30.dat};
+\addlegendentry{Sc30 (p50=0.706)}
+\addplot+[const plot, very thick, draw=c_Hi, solid] table[x=f1,y=survival] {generated/survival_best100_Hi.dat};
+\addlegendentry{Hi (p50=0.706)}
+\end{axis}
+\end{tikzpicture}

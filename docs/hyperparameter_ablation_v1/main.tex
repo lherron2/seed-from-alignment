@@ -1,0 +1,82 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots,statistics}
+\pgfplotsset{compat=1.18}
+
+\title{RNAnneal-ss hyperparameter ablation (under300 representative27) --- v1}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Scope}
+This report studies sensitivity of \textbf{RNAnneal-ss} refinement/sampling hyperparameters on a \textbf{27-target} subset of FR3D/BGSU under400 with truth length $\le 300$, balanced across \textbf{short/medium/long} length groups (9 each).
+
+\section*{Experimental setup}
+\begin{itemize}
+  \item \textbf{Common pipeline:} CaCoFold constraints + refinement + MCMC sampling (top-100 output).
+  \item \textbf{Scaffold backend:} single-strand scaffolds via EternaFold (Fold + AllSub-like suboptimals). Duplex sampling uses RNAstructure \texttt{DuplexFold}.
+  \item \textbf{Key fix included in all configs:} the refinement end-mask grid is enabled by using an end-mask step smaller than the max end-mask length (\texttt{step=10}, \texttt{max=30}).
+  \item \textbf{Length-adaptive scaling:} several budgets (e.g., max scaffolds, refinement seconds) scale with length; the tables include per-target wall-clock runtime from \texttt{qc.json}.
+\end{itemize}
+
+\section*{Configs (one-factor-at-a-time around B4)}
+\begin{itemize}
+  \item \textbf{B4:} baseline (step=10, max-end-mask=30, min-unpaired=6, max-regions=4, max-seeds/solutions=50, kissing=50, max-scaffolds=15).
+  \item \textbf{U4:} \texttt{--refine-min-unpaired 4}.
+  \item \textbf{R10:} \texttt{--refine-max-regions 10}.
+  \item \textbf{S150:} \texttt{--refine-max-seeds 150 --refine-max-solutions 150}.
+  \item \textbf{K300:} \texttt{--refine-kissing-candidates 300}.
+  \item \textbf{Sc30:} \texttt{--max-scaffolds 30}.
+  \item \textbf{Hi:} combined (U4 + R10 + S150 + K300 + Sc30).
+  \item \textbf{v3:} prior reference run (RNAnneal-ss with EternaFold scaffolds) for context.
+\end{itemize}
+
+\section*{Findings (this subset)}
+\input{generated/findings.tex}
+
+\section*{Results (@1 and @100)}
+\input{generated/overall_table.tex}
+\input{generated/group_table.tex}
+
+\section*{QC (did knobs change behavior?)}
+\input{generated/qc_table.tex}
+
+\clearpage
+\section*{1 - CDFs (F1)}
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \input{generated/survival_top1.tex}
+  \caption*{\small F1@1}
+\end{minipage}
+\hfill
+\begin{minipage}{0.49\textwidth}
+  \centering
+  \input{generated/survival_best100.tex}
+  \caption*{\small F1@100}
+\end{minipage}
+\caption{Empirical survival curves (1 - CDF). Legend includes p50 F1.}
+\end{figure}
+
+\section*{Runtime}
+\begin{figure}[H]
+\centering
+\input{generated/runtime_cdf.tex}
+\caption{Empirical CDF of per-target wall-clock runtime. Legend includes p50 runtime.}
+\end{figure}
+
+\section*{Precision/Recall (v3 vs B4 vs Hi)}
+\begin{figure}[H]
+\centering
+\input{generated/pr_compare.tex}
+\caption{Pair-level PR curves computed by thresholding pair probabilities estimated as frequency across the top-100 structures.}
+\end{figure}
+
+\end{document}

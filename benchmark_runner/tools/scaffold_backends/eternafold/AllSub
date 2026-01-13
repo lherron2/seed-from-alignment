@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _ct import CtStruct, write_ct  # noqa: E402
+from _docker import docker_run_in_dir  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _util import extract_db_lines, score_with_efn2  # noqa: E402
+
+
+def read_single_fasta(path: Path) -> tuple[str, str]:
+    seq_id = "seq"
+    seq_parts: list[str] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith(">"):
+            seq_id = ln[1:].strip() or seq_id
+            continue
+        seq_parts.append(ln)
+    return seq_id, "".join(seq_parts).upper().replace("T", "U")
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        sys.stderr.write("USAGE: AllSub <fasta> <out.ct> [options]\n")
+        return 2
+    fasta = Path(argv[1])
+    out_ct = Path(argv[2])
+
+    eternafold_image = (os.environ.get("ETERNAFOLD_DOCKER_IMAGE") or "").strip()
+    rnastructure_image = (os.environ.get("RNASTRUCTURE_DOCKER_IMAGE") or "").strip() or None
+    max_structs = int(os.environ.get("RNANNEAL_SS_SUBOPT_MAX", "200"))
+
+    seq_id, seq = read_single_fasta(fasta)
+
+    repo_root = Path(__file__).resolve().parents[4]
+    contrafold = Path(
+        os.environ.get("ETERNAFOLD_CONTRAFOLD_BIN")
+        or (repo_root / "external" / "EternaFold" / "src" / "contrafold")
+    )
+    params = Path(
+        os.environ.get("ETERNAFOLD_PARAMS")
+        or (repo_root / "external" / "EternaFold" / "parameters" / "EternaFoldParams.v1")
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # Copy FASTA into the temp dir so the container can see it.
+        in_name = "input.fa"
+        td_path.joinpath(in_name).write_text(f">{seq_id}\n{seq}\n")
+
+        # Top-1 MEA
+        if eternafold_image:
+            _rc1, pred_out = docker_run_in_dir(
+                image=eternafold_image,
+                work_dir=td_path,
+                args=["predict", in_name, "--params", "/opt/eternafold/parameters/EternaFoldParams.v1"],
+            )
+        else:
+            proc = subprocess.run(
+                [str(contrafold), "predict", in_name, "--params", str(params)],
+                cwd=str(td_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            pred_out = proc.stdout
+        top1 = extract_db_lines(pred_out, len(seq))[:1]
+
+        # Samples (suboptimals)
+        n_samples = max(0, max_structs - len(top1))
+        if eternafold_image:
+            _rc2, samp_out = docker_run_in_dir(
+                image=eternafold_image,
+                work_dir=td_path,
+                args=[
+                    "sample",
+                    in_name,
+                    "--params",
+                    "/opt/eternafold/parameters/EternaFoldParams.v1",
+                    "--nsamples",
+                    str(n_samples),
+                ],
+            )
+        else:
+            proc = subprocess.run(
+                [str(contrafold), "sample", in_name, "--params", str(params), "--nsamples", str(n_samples)],
+                cwd=str(td_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            samp_out = proc.stdout
+        samples = extract_db_lines(samp_out, len(seq))
+
+        seen: set[str] = set()
+        structs: list[str] = []
+        for s in top1 + samples:
+            if s in seen:
+                continue
+            seen.add(s)
+            structs.append(s)
+            if len(structs) >= max_structs:
+                break
+        if not structs:
+            structs = ["." * len(seq)]
+
+        # Write CT with placeholder energies, then score with RNAstructure efn2 and rewrite energies.
+        tmp_ct = td_path / "out.ct"
+        write_ct(seq=seq, structs=[CtStruct(s, 0.0, seq_id) for s in structs], out_path=tmp_ct)
+        energies = score_with_efn2(rnastructure_image=rnastructure_image, work_dir=td_path, ct_name="out.ct")
+        if len(energies) == len(structs):
+            write_ct(
+                seq=seq,
+                structs=[CtStruct(s, e, seq_id) for s, e in zip(structs, energies, strict=True)],
+                out_path=tmp_ct,
+            )
+
+        out_ct.parent.mkdir(parents=True, exist_ok=True)
+        out_ct.write_text(tmp_ct.read_text())
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
