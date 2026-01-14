@@ -8,6 +8,7 @@ prefixes (K=1,50,100,200,500,...) can be evaluated for best-of-K oracle metrics.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,11 @@ def _v3_high_args(
     top_k: int,
     reuse_cacofold_root: str | None,
 ) -> list[str]:
+    # Scale a few "ensemble top-K" knobs with K so prefixes (@50/@100/...) get adequate coverage.
+    inject_allsub_scaffolds_max = min(150, max(25, int(round(0.20 * float(top_k)))))
+    force_allsub_output = min(int(top_k), max(50, int(round(0.40 * float(top_k)))))
+    max_scaffolds = min(30, max(15, int(round(0.04 * float(top_k))) + 5))
+
     args: list[str] = [
         "--cm-db",
         cm_db,
@@ -138,19 +144,19 @@ def _v3_high_args(
         "--refine-kissing-candidates",
         "50",
         "--max-scaffolds",
-        "15",
+        str(int(max_scaffolds)),
         "--max-samples-per-scaffold",
         "120",
         "--length-adaptive",
-        "--no-include-unfixed-sampling",
+        "--include-unfixed-sampling",
         "--inject-allsub-scaffolds",
         "--inject-allsub-scaffolds-max",
-        "25",
+        str(int(inject_allsub_scaffolds_max)),
         "--inject-allsub-timeout-s",
         "30",
         # Ensures a minimum quota of thermo suboptimals in the final list (empirically helpful).
         "--force-allsub-output",
-        "95",
+        str(int(force_allsub_output)),
     ]
     if infernal_bin:
         args += ["--infernal-bin", infernal_bin]
@@ -207,6 +213,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    # ensemble3/AllSub uses RNANNEAL_SS_SUBOPT_MAX as the total interleaved stream size. To improve
+    # best-of-K oracle metrics, we oversample suboptimals so each backend contributes >K candidates
+    # (3 sources: RS/LF/EF), then interleave and truncate.
+    if "RNANNEAL_SS_SUBOPT_MAX" not in os.environ:
+        os.environ["RNANNEAL_SS_SUBOPT_MAX"] = str(max(600, min(3000, int(args.top_k) * 6)))
+
     _add_repo_paths_to_syspath()
     from ssbench.predict import cacofold_mcmc_pipeline  # type: ignore[import-not-found]
 
@@ -227,4 +239,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

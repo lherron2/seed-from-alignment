@@ -535,7 +535,7 @@ def build_topk_predictions(
     # This targets the long-RNA regime where the (single-sequence) scaffold can be a poor global
     # fit to the target's protein-stabilized 3D conformation.
     unfixed_db: Path | None = None
-    if include_unfixed_sampling and L_fasta >= 151:
+    if include_unfixed_sampling and L_fasta >= 80:
         unfixed_sample_cfg = dataclasses.replace(
             sample_cfg,
             fix_scaffold_pairs=False,
@@ -820,15 +820,43 @@ def build_topk_predictions(
                 thermo_structs_full = rup.call_rnastructure_allsub(allsub_exe, full_seq)
             except Exception:
                 thermo_structs_full = []
-        allsub_pool = thermo_structs_full[:200]
+        # Pull a much larger AllSub prefix when we intend to force AllSub candidates into the
+        # final top-K. With ensemble backends (RS/LF/EF), the AllSub stream is interleaved across
+        # sources, so the first ~3*K entries roughly correspond to the first ~K entries of each
+        # source.
+        allsub_cap = max(200, min(3000, int(round(3 * float(top_k)))))
+        if force_allsub_output > 0:
+            allsub_cap = max(allsub_cap, min(3000, int(round(3 * float(force_allsub_output)))))
+        env_max = (os.environ.get("RNANNEAL_SS_SUBOPT_MAX") or "").strip()
+        if env_max:
+            try:
+                allsub_cap = max(allsub_cap, min(3000, int(env_max)))
+            except ValueError:
+                pass
+        allsub_pool = thermo_structs_full[:allsub_cap]
         for seed_order, (struct, energy) in enumerate(allsub_pool, start=1):
             # Normally we skip AllSub structures already present in the refined/sampled pool to
             # avoid ballooning the candidate list. When force_allsub_output>0, we intentionally
             # keep them as explicit seed candidates so the final top-K selection can include them
             # even if refined-order/MMR heuristics would otherwise drop them.
-            if struct in refined_candidates or struct in pooled_structs:
+            if struct in refined_candidates:
                 if force_allsub_output <= 0:
                     continue
+                existing = refined_candidates[struct]
+                existing.setdefault("is_seed", True)
+                existing.setdefault("seed_kind", "allsub")
+                existing.setdefault("seed_order", int(seed_order))
+                existing.setdefault("seed_energy", float(energy))
+                continue
+            if struct in pooled_structs:
+                if force_allsub_output <= 0:
+                    continue
+                existing = pooled_structs[struct]
+                existing.setdefault("is_seed", True)
+                existing.setdefault("seed_kind", "allsub")
+                existing.setdefault("seed_order", int(seed_order))
+                existing.setdefault("seed_energy", float(energy))
+                continue
             pairs = normalized_pairs(struct)
             pk_pairs_count, total_crossings, max_cross = compute_pk_stats(pairs)
             support_sum = float(sum(weights.get(p, 0.0) for p in pairs))
@@ -1140,11 +1168,10 @@ def build_topk_predictions(
             return
 
     # --- Multi-objective top-K selection (MMR / coverage@K proxy) ---
-    K = int(top_k)
-    if len(candidates) <= K:
-        candidates.sort(key=lambda c: (float(c["rank_combo"]), str(c["struct"])))
-        _write_qc(candidates)
-        return [str(c["struct"]) for c in candidates]
+    # Even when we have fewer than K candidates, the ordering still matters for prefix (@50/@100)
+    # oracle metrics.  So we always run the selection+ordering logic, but cap K to |candidates|.
+    K_requested = int(top_k)
+    K = min(K_requested, len(candidates))
 
     selected: list[dict[str, object]] = []
     selected_structs: set[str] = set()
@@ -1166,6 +1193,40 @@ def build_topk_predictions(
     nseq = len(seqs)
     refined_prefix = 0
     reserved_allsub = max(0, min(int(force_allsub_output), int(K)))
+
+    def _seed_order(c: dict[str, object]) -> int:
+        try:
+            return int(c.get("seed_order", 10**9))
+        except Exception:
+            return 10**9
+
+    def _pick_evenly(pool: list[dict[str, object]], k: int) -> list[dict[str, object]]:
+        if k <= 0 or not pool:
+            return []
+        if k >= len(pool):
+            return pool
+        if k == 1:
+            return [pool[len(pool) // 2]]
+        idxs = sorted({int(round(i * (len(pool) - 1) / (k - 1))) for i in range(k)})
+        return [pool[i] for i in idxs]
+
+    def _alternate_ends(items: list[dict[str, object]]) -> list[dict[str, object]]:
+        out: list[dict[str, object]] = []
+        i = 0
+        j = len(items) - 1
+        while i <= j:
+            out.append(items[i])
+            i += 1
+            if i <= j:
+                out.append(items[j])
+                j -= 1
+        return out
+
+    allsub_sorted: list[dict[str, object]] = []
+    if reserved_allsub > 0:
+        allsub_pool = [c for c in candidates if str(c.get("seed_kind", "")) == "allsub"]
+        allsub_sorted = sorted(allsub_pool, key=lambda c: (_seed_order(c), str(c["struct"])))
+
     if refined_all:
         if rfam_id == "no_rfam_hit":
             # For the fallback-only regime, refined candidates are local edits of an MFE scaffold
@@ -1195,11 +1256,52 @@ def build_topk_predictions(
                 max(20, int(K) - int(helix_seed_n) - int(reserve_other)),
             )
 
+    # Improve @1: pick the best scorer-ensemble candidate as the first structure.
+    if candidates:
+        best_overall = min(candidates, key=lambda c: (float(c["rank_combo"]), str(c["struct"])))
+        add(best_overall)
+
+    # Prefix-aware selection: ensure some AllSub candidates appear very early so prefixes (@50/@100)
+    # contain thermo suboptimals even when refined-order is strongly front-loaded.
+    if reserved_allsub > 0 and allsub_sorted:
+        early_budget = min(K, 100)
+        early_quota = min(reserved_allsub, int(round(0.25 * early_budget)))
+        if K >= 50 and early_quota > 0:
+            early_quota = max(10, early_quota)
+        early_quota = min(int(early_quota), max(0, int(K) - len(selected)))
+        if early_quota > 0:
+            span = min(len(allsub_sorted), max(500, int(round(3.0 * float(K)))))
+            pool = allsub_sorted[:span]
+            head_n = min(len(allsub_sorted), min(10, int(early_quota)))
+            probe = list(allsub_sorted[:head_n])
+            remain = int(early_quota) - len(probe)
+            if remain > 0:
+                probe_n = min(len(pool), max(remain, remain * 3))
+                probe += _alternate_ends(_pick_evenly(pool, probe_n))
+            added = 0
+            for cand in probe + pool + allsub_sorted:
+                if added >= int(early_quota) or len(selected) >= K:
+                    break
+                if str(cand["struct"]) in selected_structs:
+                    continue
+                add(cand)
+                added += 1
+
+    # Adjust refined-prefix to ensure we can still satisfy the AllSub quota after prefix seeding.
+    if refined_prefix > 0 and reserved_allsub > 0 and allsub_sorted:
+        allsub_selected = sum(1 for c in selected if str(c.get("seed_kind", "")) == "allsub")
+        need_allsub = max(0, int(reserved_allsub) - int(allsub_selected))
+        refined_prefix = min(refined_prefix, max(0, int(K) - int(need_allsub) - len(selected)))
+
     if refined_prefix > 0:
-        if len_scale > 0:
-            refined_pick = sorted(refined_all, key=lambda c: (float(c["rank_combo"]), str(c["struct"])))
-        else:
-            refined_pick = sorted(refined_all, key=lambda c: int(c.get("refined_order", 10**9)))
+        refined_pick = sorted(
+            refined_all,
+            key=lambda c: (
+                float(c["rank_combo"]),
+                int(c.get("refined_order", 10**9)),
+                str(c["struct"]),
+            ),
+        )
         for cand in refined_pick[:refined_prefix]:
             if len(selected) >= K:
                 break
@@ -1207,9 +1309,6 @@ def build_topk_predictions(
                 continue
             add(cand)
 
-    # Guardrail: always seed a small set of refined candidates.
-    # In practice, these often contain the "one good" nested/PK solution that matters for best-of-K,
-    # and MMR/diversity can accidentally drop them as near-duplicates.
     def _topn(
         pool: list[dict[str, object]],
         key: str,
@@ -1239,41 +1338,67 @@ def build_topk_predictions(
             continue
         add(cand)
 
+    # Prefix-aware: pull a few high-scoring sampled candidates early so @200 can benefit from MCMC
+    # rather than being dominated by refined/scaffold seeds.
+    sampled_all = [
+        c for c in candidates if (not bool(c.get("is_refined"))) and (not bool(c.get("is_seed")))
+    ]
+    if sampled_all:
+        sampled_must: list[dict[str, object]] = []
+        sampled_must += _topn(sampled_all, "rank_combo", 4)
+        sampled_must += _topn(sampled_all, "rank_min", 4)
+        sampled_must += sorted(
+            sampled_all,
+            key=lambda c: (float(c["support_sum"]), float(c["rank_combo"]), str(c["struct"])),
+            reverse=True,
+        )[:4]
+        pk_sampled = [c for c in sampled_all if int(c.get("pk_pairs_count", 0)) > 0]
+        if pk_sampled:
+            sampled_must += _topn(pk_sampled, "rank_combo", 4)
+            pk_sampled.sort(
+                key=lambda c: (
+                    int(c.get("pk_pairs_count", 0)),
+                    int(c.get("total_crossings", 0)),
+                    float(c.get("support_sum", 0.0)),
+                ),
+                reverse=True,
+            )
+            sampled_must += pk_sampled[:4]
+        for cand in sampled_must:
+            if len(selected) >= K:
+                break
+            if str(cand["struct"]) in selected_structs:
+                continue
+            add(cand)
+
     # If configured, ensure we include a large slice of AllSub-like candidates in the final top-K.
     # This is important for scaffold backends (LF/EF) where suboptimals can contain the best-of-100
     # structure, and where our proxy energy scorers might otherwise over-prioritize refined ordering.
-    if reserved_allsub > 0:
-        allsub_pool = [c for c in candidates if str(c.get("seed_kind", "")) == "allsub"]
-
-        def _seed_order(c: dict[str, object]) -> int:
-            try:
-                return int(c.get("seed_order", 10**9))
-            except Exception:
-                return 10**9
-
-        allsub_sorted = sorted(allsub_pool, key=lambda c: (_seed_order(c), str(c["struct"])))
-
-        def _pick_evenly(pool: list[dict[str, object]], k: int) -> list[dict[str, object]]:
-            if k <= 0 or not pool:
-                return []
-            if k >= len(pool):
-                return pool
-            if k == 1:
-                return [pool[len(pool) // 2]]
-            idxs = sorted({int(round(i * (len(pool) - 1) / (k - 1))) for i in range(k)})
-            return [pool[i] for i in idxs]
-
-        need = min(reserved_allsub, max(0, int(K) - len(selected)))
-        if need > 0 and allsub_sorted:
-            # For @100 benchmarking, the best candidate is often within the first ~100 suboptimals.
-            # Prefer to draw from that span, but oversample to compensate for dedup with already-
-            # selected refined candidates (common when AllSub scaffolds are also refined).
-            span = min(len(allsub_sorted), max(100, int(need)))
+    if reserved_allsub > 0 and allsub_sorted:
+        allsub_selected = sum(1 for c in selected if str(c.get("seed_kind", "")) == "allsub")
+        need = min(
+            max(0, int(reserved_allsub) - int(allsub_selected)),
+            max(0, int(K) - len(selected)),
+        )
+        if need > 0:
+            # Spread picks across a wide span of the AllSub stream so we include both MFE-adjacent
+            # and mid-energy alternatives (often important for tertiary-stabilized folds).
+            span = min(len(allsub_sorted), max(500, int(round(6.0 * float(K)))))
             pool = allsub_sorted[:span]
-            probe_n = min(len(pool), max(int(need), int(need) * 3))
-            probe = _pick_evenly(pool, probe_n)
             added = 0
-            for cand in probe + pool + allsub_sorted:
+            # First, add a small evenly-spaced probe set so mid-range suboptimals can land within
+            # early prefixes (@200) instead of being pushed to the tail of the AllSub quota.
+            probe_n = min(int(need), 24)
+            probe = _pick_evenly(pool, probe_n)
+
+            for cand in _alternate_ends(probe):
+                if added >= need or len(selected) >= K:
+                    break
+                if str(cand["struct"]) in selected_structs:
+                    continue
+                add(cand)
+                added += 1
+            for cand in pool + allsub_sorted:
                 if added >= need or len(selected) >= K:
                     break
                 if str(cand["struct"]) in selected_structs:
@@ -1521,6 +1646,16 @@ def build_topk_predictions(
             score_weight=1.0,
             diversity_weight=0.5,
         )
+
+    # If we still have slack (e.g. all buckets exhausted early), append remaining candidates in
+    # rank_combo order so we always emit exactly K outputs (or all candidates when |candidates|<K).
+    if len(selected) < K:
+        for cand in sorted(candidates, key=lambda c: (float(c["rank_combo"]), str(c["struct"]))):
+            if len(selected) >= K:
+                break
+            if str(cand["struct"]) in selected_structs:
+                continue
+            add(cand)
 
     _write_qc(selected[:K])
     return [str(c["struct"]) for c in selected[:K]]

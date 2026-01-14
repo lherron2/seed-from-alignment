@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import subprocess
 import sys
@@ -41,9 +42,9 @@ def _env_path(name: str) -> Path | None:
     return Path(val)
 
 
-def _run_allsub(exe: Path, fasta: Path, out_ct: Path, extra: list[str]) -> bool:
+def _run_allsub(exe: Path, fasta: Path, out_ct: Path, extra: list[str], *, env: dict[str, str]) -> bool:
     try:
-        proc = subprocess.run([str(exe), str(fasta), str(out_ct), *extra], check=False)
+        proc = subprocess.run([str(exe), str(fasta), str(out_ct), *extra], check=False, env=env)
         return proc.returncode == 0 and out_ct.exists() and out_ct.stat().st_size > 0
     except FileNotFoundError:
         return False
@@ -113,25 +114,31 @@ def main(argv: list[str]) -> int:
     structs_lf: list[tuple[str, float]] = []
     structs_ef: list[tuple[str, float]] = []
 
+    # Child backends interpret RNANNEAL_SS_SUBOPT_MAX as their own max output size. For the
+    # ensemble case we only ever need ~max_total/num_sources from each, because we interleave.
+    per_source_max = max(1, int(math.ceil(float(max_structs) * 1.2 / 3.0)))
+    child_env = os.environ.copy()
+    child_env["RNANNEAL_SS_SUBOPT_MAX"] = str(per_source_max)
+
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         rs_ct = td_path / "rs.ct"
         lf_ct = td_path / "lf.ct"
         ef_ct = td_path / "ef.ct"
 
-        if _run_allsub(rs_allsub, fasta, rs_ct, extra):
+        if _run_allsub(rs_allsub, fasta, rs_ct, extra, env=child_env):
             try:
                 structs_rs = [(db, e) for db, e in rup.parse_ct_file(rs_ct) if len(db) == L]
             except Exception:
                 structs_rs = []
 
-        if _run_allsub(lf_allsub, fasta, lf_ct, extra):
+        if _run_allsub(lf_allsub, fasta, lf_ct, extra, env=child_env):
             try:
                 structs_lf = [(db, e) for db, e in rup.parse_ct_file(lf_ct) if len(db) == L]
             except Exception:
                 structs_lf = []
 
-        if _run_allsub(ef_allsub, fasta, ef_ct, extra):
+        if _run_allsub(ef_allsub, fasta, ef_ct, extra, env=child_env):
             try:
                 structs_ef = [(db, e) for db, e in rup.parse_ct_file(ef_ct) if len(db) == L]
             except Exception:
