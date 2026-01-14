@@ -396,6 +396,14 @@ def build_topk_predictions(
     consensus_db = legacy_pipeline.get_consensus_db(cfg)
     consensus_structs = rup.read_db_structures(consensus_db)
     consensus_pairs_n = len(rup._pairs_from_struct(consensus_structs[0])) if consensus_structs else 0
+    cov_has_pairs = bool(cov_stats)
+    cov_empty = bool(cov is not None and cov.exists() and not cov_has_pairs)
+    seed_boost = bool(
+        cov is None
+        or rfam_id == "no_rfam_hit"
+        or fasta_had_nonstandard_bases
+        or consensus_pairs_n <= 6
+    )
 
     # Also compute an MFE structure (when possible) but do not send it through the expensive
     # refinement stage; instead, inject it as an extra scaffold for sampling/ranking.
@@ -536,12 +544,38 @@ def build_topk_predictions(
     # fit to the target's protein-stabilized 3D conformation.
     unfixed_db: Path | None = None
     if include_unfixed_sampling and L_fasta >= 80:
+        thermo_pool_n = int(thermo_max_structures)
+        thermo_min_count_eff = max(1, int(thermo_min_count))
+        if cov_empty:
+            thermo_pool_n = max(thermo_pool_n, 200)
+            thermo_min_count_eff = 1
+
+        pk_filter_frac = 0.35
+        pk_filter_max_cross_per_pair = min(30, max(6, int(round(0.20 * float(L_fasta))))) if L_fasta else 6
+        pk_filter_max_total_cross = min(500, max(30, int(round(1.50 * float(L_fasta))))) if L_fasta else 30
+
         unfixed_sample_cfg = dataclasses.replace(
             sample_cfg,
             fix_scaffold_pairs=False,
             seed=int(seed) + 1,
             max_scaffolds=max(5, int(round(max_scaffolds_eff * 0.25))),
             max_samples_per_scaffold=max(100, int(round(max_samples_per_scaffold_eff * 0.33))),
+            pk_alpha=float(sample_cfg.pk_alpha) * 0.5,
+            pk_filter_frac=float(pk_filter_frac),
+            pk_filter_max_cross_per_pair=int(pk_filter_max_cross_per_pair),
+            pk_filter_max_total_cross=int(pk_filter_max_total_cross),
+            weight_calibration_method=str(weight_calibration_method),
+            weight_calibration_zmax=float(weight_calibration_zmax),
+            weight_alpha_core=float(weight_alpha_core),
+            weight_alpha_alt=float(weight_alpha_alt),
+            weight_alpha_cov=float(weight_alpha_cov),
+            weight_alpha_thermo=float(weight_alpha_thermo),
+            thermo_mode=str(thermo_mode),
+            thermo_weight=float(thermo_weight),
+            thermo_max_structures=int(thermo_pool_n),
+            thermo_min_count=int(thermo_min_count_eff),
+            thermo_min_prob=float(thermo_min_prob),
+            thermo_log_eps=float(thermo_log_eps),
         )
         unfixed_io = dataclasses.replace(cfg.io, sampled_db=work_dir / "02_sampled_unfixed.db")
         unfixed_cfg = dataclasses.replace(cfg, sample=unfixed_sample_cfg, io=unfixed_io)
@@ -579,12 +613,6 @@ def build_topk_predictions(
         full_seq = read_fasta_sequence(fasta)
 
     thermo_structs_full: list[tuple[str, float]] = []
-    seed_boost = bool(
-        cov is None
-        or rfam_id == "no_rfam_hit"
-        or fasta_had_nonstandard_bases
-        or consensus_pairs_n <= 6
-    )
 
     if thermo_weight > 0 and thermo_mode != "off":
         if thermo_mode == "pf" and partition_exe and probplot_exe:

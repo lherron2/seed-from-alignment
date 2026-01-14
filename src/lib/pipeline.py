@@ -265,13 +265,57 @@ def _select_refined_scaffolds(
         pk_gamma=float(sample_cfg.pk_gamma),
         lonely_penalty=float(sample_cfg.lonely_penalty),
     )
-    scored: list[tuple[str, float, frozenset[tuple[int, int]]]] = []
+    if sample_cfg.fix_scaffold_pairs:
+        scored: list[tuple[str, float, frozenset[tuple[int, int]]]] = []
+        for struct in refined_structs:
+            pairs = _normalized_pair_set_from_struct(struct)
+            score, _cache = energy.compute_energy(set(pairs), weights, params)
+            scored.append((struct, float(score), pairs))
+        return _select_diverse_by_score(scored, max_scaffolds)
+
+    scored_pk: list[tuple[str, float, frozenset[tuple[int, int]]]] = []
+    scored_nonpk: list[tuple[str, float, frozenset[tuple[int, int]]]] = []
+    scores: dict[str, float] = {}
     for struct in refined_structs:
         pairs = _normalized_pair_set_from_struct(struct)
         score, _cache = energy.compute_energy(set(pairs), weights, params)
-        scored.append((struct, float(score), pairs))
+        score_f = float(score)
+        scores[struct] = score_f
+        rec = (struct, score_f, pairs)
+        if _cache.pk_pairs_count > 0:
+            scored_pk.append(rec)
+        else:
+            scored_nonpk.append(rec)
 
-    return _select_diverse_by_score(scored, max_scaffolds)
+    pk_quota = min(len(scored_pk), max(0, min(4, int(max_scaffolds) // 6)))
+    nonpk_quota = max(0, int(max_scaffolds) - int(pk_quota))
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+
+    if pk_quota > 0:
+        chosen_pk = _select_diverse_by_score(scored_pk, pk_quota, diversity_weight=0.75)
+        selected.extend(chosen_pk)
+        selected_set.update(chosen_pk)
+
+    pool_nonpk = scored_nonpk if scored_nonpk else scored_pk
+    if nonpk_quota > 0 and pool_nonpk:
+        remaining_pool = [rec for rec in pool_nonpk if rec[0] not in selected_set]
+        chosen_nonpk = _select_diverse_by_score(remaining_pool, nonpk_quota)
+        selected.extend(chosen_nonpk)
+        selected_set.update(chosen_nonpk)
+
+    if len(selected) < max_scaffolds:
+        remaining = [rec for rec in (scored_pk + scored_nonpk) if rec[0] not in selected_set]
+        remaining.sort(key=lambda r: (r[1], r[0]))
+        for struct, _score, _pairs in remaining:
+            if len(selected) >= max_scaffolds:
+                break
+            selected.append(struct)
+            selected_set.add(struct)
+
+    selected.sort(key=lambda s: (scores.get(s, float("inf")), s))
+    return selected
 
 
 @dataclass
