@@ -683,9 +683,9 @@ def build_topk_predictions(
         method=str(weight_calibration_method),
         zmax=float(weight_calibration_zmax),
     )
-    weights = wc.blend_components(components, alphas=alphas, config=norm_cfg)
+    weights_base = wc.blend_components(components, alphas=alphas, config=norm_cfg)
 
-    w_scale = wc.weight_scale(weights)
+    w_scale = wc.weight_scale(weights_base)
     if pair_penalty is None:
         if pair_penalty_mode == "length_aware":
             length = max(1, int(L))
@@ -709,7 +709,9 @@ def build_topk_predictions(
     stem_len1_penalty = float(stem_len1_penalty_scale) * w_scale
     stem_len2_penalty = float(stem_len2_penalty_scale) * w_scale
     stem_log_reward = float(stem_log_reward_scale) * w_scale
-    support_threshold = wc.quantile_threshold(weights, float(stem_support_quantile))
+    support_threshold = wc.quantile_threshold(weights_base, float(stem_support_quantile))
+
+    weights = weights_base
 
     def normalized_pairs(struct: str) -> frozenset[tuple[int, int]]:
         pairs = []
@@ -1302,6 +1304,14 @@ def build_topk_predictions(
             pool = allsub_sorted[:span]
             head_n = min(len(allsub_sorted), min(10, int(early_quota)))
             probe = list(allsub_sorted[:head_n])
+            if cov_empty:
+                # Some weak-cov targets have their best AllSub structure slightly beyond the
+                # very first few MFE-adjacent candidates (often around seed_order ~80–120).
+                # Seed an additional early band so @200 doesn't miss these cases.
+                band_start = min(len(pool), 80)
+                band_end = min(len(pool), 140)
+                if band_end > band_start:
+                    probe += pool[band_start:band_end]
             remain = int(early_quota) - len(probe)
             if remain > 0:
                 probe_n = min(len(pool), max(remain, remain * 3))
@@ -1417,9 +1427,52 @@ def build_topk_predictions(
             # First, add a small evenly-spaced probe set so mid-range suboptimals can land within
             # early prefixes (@200) instead of being pushed to the tail of the AllSub quota.
             probe_n = min(int(need), 24)
-            probe = _pick_evenly(pool, probe_n)
+            if cov_empty:
+                # Weak-evidence heuristic: reserve a small contiguous window around mid-to-high
+                # energies (where the oracle-best structure can appear) rather than only sampling
+                # sparse representatives. This is intentionally seed-order based (not proxy-score
+                # based) so we keep candidates even when the proxy scorer misranks them.
+                probe: list[dict[str, object]] = []
+                seen_probe: set[str] = set()
 
-            for cand in _alternate_ends(probe):
+                def add_probe(cand: dict[str, object]) -> None:
+                    s = str(cand["struct"])
+                    if s in seen_probe:
+                        return
+                    seen_probe.add(s)
+                    probe.append(cand)
+
+                window = min(len(pool), max(12, int(round(0.12 * float(need)))))
+                # Include a small early-energy window (≈3% of the stream) because some targets'
+                # best AllSub structure is not in the very first few seeds, but still near the
+                # front of the ordering.
+                centers = [0.03, 0.10, 0.50, 0.75, 0.90]
+                for q in centers:
+                    if len(probe) >= int(need):
+                        break
+                    if not pool:
+                        break
+                    c = int(round(q * float(len(pool) - 1)))
+                    start = max(0, int(c) - (window // 2))
+                    end = min(len(pool), start + window)
+                    start = max(0, end - window)
+                    for cand in pool[start:end]:
+                        add_probe(cand)
+
+                remaining_need = max(0, int(need) - len(probe))
+                if remaining_need > 0:
+                    fill_n = min(len(pool), max(remaining_need, remaining_need * 3))
+                    fill = _pick_evenly(pool, int(fill_n))
+                    for cand in _alternate_ends(fill):
+                        if len(probe) >= int(need):
+                            break
+                        add_probe(cand)
+
+                probe = probe[: int(need)]
+            else:
+                probe = _pick_evenly(pool, probe_n)
+
+            for cand in (probe if cov_empty else _alternate_ends(probe)):
                 if added >= need or len(selected) >= K:
                     break
                 if str(cand["struct"]) in selected_structs:
